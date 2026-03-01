@@ -1,0 +1,21 @@
+Issue key,Issue id,Summary,Description,Priority,Issue Type,Status,Project key,Project name,Creator,Created,Updated,Release
+AUD-1,1,CSV Upload & Parser,"Supports Business Reports, Active Listings, Account Health, Ads, FBA Inventory",High,Task,To Do,AUD,Amazon Audit MVP,Ahmad,2026-02-28T22:21:25.000+0000,2026-02-28T22:21:25.000+0000,Week 1-2
+AUD-2,2,AWS S3 File Storage,Store uploaded CSVs securely,High,Task,To Do,AUD,Amazon Audit MVP,Ahmad,2026-02-28T22:21:25.000+0000,2026-02-28T22:21:25.000+0000,Week 1-2
+AUD-3,3,AWS Cognito Auth,"Sign up, login, JWT tokens",High,Task,To Do,AUD,Amazon Audit MVP,Ahmad,2026-02-28T22:21:25.000+0000,2026-02-28T22:21:25.000+0000,Week 1-2
+AUD-4,4,RDS PostgreSQL Setup,"Users, reports, audits, snapshots tables",High,Task,To Do,AUD,Amazon Audit MVP,Ahmad,2026-02-28T22:21:25.000+0000,2026-02-28T22:21:25.000+0000,Week 1-2
+AUD-5,5,FastAPI + Lambda Core,API routes with Mangum adapter,High,Task,To Do,AUD,Amazon Audit MVP,Ahmad,2026-02-28T22:21:25.000+0000,2026-02-28T22:21:25.000+0000,Week 1-2
+AUD-6,6,API Gateway Setup,HTTP endpoint with Cognito authorizer,High,Task,To Do,AUD,Amazon Audit MVP,Ahmad,2026-02-28T22:21:25.000+0000,2026-02-28T22:21:25.000+0000,Week 1-2
+AUD-7,7,Next.js Dashboard UI,Tailwind + Headless UI components,High,Task,To Do,AUD,Amazon Audit MVP,Ahmad,2026-02-28T22:21:25.000+0000,2026-02-28T22:21:25.000+0000,Week 2-3
+AUD-8,8,Listing Health Scoring,"Title, bullets, images, Buy Box %",High,Task,To Do,AUD,Amazon Audit MVP,Ahmad,2026-02-28T22:21:25.000+0000,2026-02-28T22:21:25.000+0000,Week 3-4
+AUD-9,9,Account Health Scoring,"ODR <1%, Late Shipment <4%, Cancellation <2.5%",High,Task,To Do,AUD,Amazon Audit MVP,Ahmad,2026-02-28T22:21:25.000+0000,2026-02-28T22:21:25.000+0000,Week 3-4
+AUD-10,10,Traffic & Conversion Scoring,High sessions + low conversion = listing issue,High,Task,To Do,AUD,Amazon Audit MVP,Ahmad,2026-02-28T22:21:25.000+0000,2026-02-28T22:21:25.000+0000,Week 3-4
+AUD-11,11,Ad Efficiency Scoring,"ACoS benchmarked, wasted spend flagged",High,Task,To Do,AUD,Amazon Audit MVP,Ahmad,2026-02-28T22:21:25.000+0000,2026-02-28T22:21:25.000+0000,Week 3-4
+AUD-12,12,Perplexity API Integration,URL research mode for live competitor analysis,Medium,Task,To Do,AUD,Amazon Audit MVP,Ahmad,2026-02-28T22:21:25.000+0000,2026-02-28T22:21:25.000+0000,Week 5-6
+AUD-13,13,Dashboard Charts & Visuals,"Recharts: bar charts, gauges, trend lines",Medium,Task,To Do,AUD,Amazon Audit MVP,Ahmad,2026-02-28T22:21:25.000+0000,2026-02-28T22:21:25.000+0000,Week 5-6
+AUD-14,14,AI Recommendations Engine,Plain-English action items per flagged issue,Medium,Task,To Do,AUD,Amazon Audit MVP,Ahmad,2026-02-28T22:21:25.000+0000,2026-02-28T22:21:25.000+0000,Week 7-8
+AUD-15,15,Audit Report PDF Export,Shareable report with before/after tracking,Medium,Task,To Do,AUD,Amazon Audit MVP,Ahmad,2026-02-28T22:21:25.000+0000,2026-02-28T22:21:25.000+0000,Week 7-8
+AUD-16,16,Before/After Snapshots,Store historical audits for progress tracking,Medium,Task,To Do,AUD,Amazon Audit MVP,Ahmad,2026-02-28T22:21:25.000+0000,2026-02-28T22:21:25.000+0000,Week 7-8
+AUD-17,17,Mobile Responsive UI,Works on tablets and phones,Low,Task,To Do,AUD,Amazon Audit MVP,Ahmad,2026-02-28T22:21:25.000+0000,2026-02-28T22:21:25.000+0000,Week 9-10
+AUD-18,18,PRD Documentation,Required deliverable per offer letter,High,Task,To Do,AUD,Amazon Audit MVP,Ahmad,2026-02-28T22:21:25.000+0000,2026-02-28T22:21:25.000+0000,Week 9-10
+AUD-19,19,Loom Demo Walkthrough,Required deliverable per offer letter,High,Task,To Do,AUD,Amazon Audit MVP,Ahmad,2026-02-28T22:21:25.000+0000,2026-02-28T22:21:25.000+0000,Week 10
+AUD-20,20,Deployment & Testing,Vercel frontend + AWS backend live,High,Task,To Do,AUD,Amazon Audit MVP,Ahmad,2026-02-28T22:21:25.000+0000,2026-02-28T22:21:25.000+0000,Week 10-12
