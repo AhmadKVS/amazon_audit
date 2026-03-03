@@ -3,7 +3,6 @@ frontend:
   phases:
     preBuild:
       commands:
-        - git submodule update --init --recursive
         - cd frontend && npm ci
     build:
       commands:
