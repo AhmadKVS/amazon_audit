@@ -15,7 +15,7 @@ class Settings(BaseSettings):
     CORS_ORIGINS: list[str] = ["http://localhost:3000", "https://*.vercel.app"]
     
     # AWS
-    AWS_REGION: str = "us-east-1"
+    AWS_REGION: str = "us-east-2"
     AWS_ACCESS_KEY_ID: str = ""
     AWS_SECRET_ACCESS_KEY: str = ""
     S3_BUCKET: str = "amazon-audit-uploads"

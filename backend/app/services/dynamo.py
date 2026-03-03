@@ -64,10 +64,22 @@ def ensure_table() -> None:
         return
 
 
+def _sanitize(obj):
+    """Remove empty strings from nested dicts/lists (DynamoDB rejects them)."""
+    if isinstance(obj, dict):
+        return {k: _sanitize(v) for k, v in obj.items() if v != ""}
+    if isinstance(obj, list):
+        return [_sanitize(v) for v in obj]
+    if isinstance(obj, float):
+        return Decimal(str(obj))
+    return obj
+
+
 def save_audit(user_id: str, audit_id: str, data: dict) -> None:
     """Persist a full audit record for a user."""
+    print(f"[dynamo] save_audit user_id={user_id!r} audit_id={audit_id!r}")
     table = _resource().Table(settings.DYNAMODB_TABLE)
-    item = {
+    item = _sanitize({
         "user_id":          user_id,
         "audit_id":         audit_id,
         "created_at":       datetime.now(timezone.utc).isoformat(),
@@ -82,8 +94,13 @@ def save_audit(user_id: str, audit_id: str, data: dict) -> None:
         "benchmark_metrics": data.get("benchmark_metrics", []),
         "csv_metadata":     data.get("csv_metadata", {}),
         "citations":        data.get("citations", []),
-    }
-    table.put_item(Item=item)
+    })
+    try:
+        table.put_item(Item=item)
+        print(f"[dynamo] save_audit SUCCESS")
+    except Exception as e:
+        print(f"[dynamo] save_audit FAILED: {e}")
+        raise
 
 
 def _to_native(obj):
@@ -98,11 +115,48 @@ def _to_native(obj):
 
 
 def list_audits(user_id: str) -> list[dict]:
-    """Return all audits for a user, sorted newest first."""
+    """Return all audits for a user, sorted newest first (summary fields only)."""
     table = _resource().Table(settings.DYNAMODB_TABLE)
+    print(f"[dynamo] list_audits called with user_id={user_id!r}")
     resp = table.query(
         KeyConditionExpression=boto3.dynamodb.conditions.Key("user_id").eq(user_id),
+        ProjectionExpression="audit_id, brand_name, niche, marketplace, report_type, audit_purpose, notes, created_at",
     )
     items = resp.get("Items", [])
+    print(f"[dynamo] list_audits -> {len(items)} items found")
     items.sort(key=lambda x: x.get("created_at", ""), reverse=True)
     return [_to_native(item) for item in items]
+
+
+# ── Share tokens ────────────────────────────────────────────────────────────
+# Stored as separate items: PK="share", SK=token -> { user_id, audit_id }
+
+def set_share_token(user_id: str, audit_id: str, token: str) -> None:
+    """Create a share token item pointing to an audit."""
+    table = _resource().Table(settings.DYNAMODB_TABLE)
+    table.put_item(Item={
+        "user_id":  "share",
+        "audit_id": token,
+        "owner_id": user_id,
+        "real_audit_id": audit_id,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    })
+
+
+def get_audit_by_token(token: str) -> dict | None:
+    """Look up a full audit record via a share token. Returns None if not found."""
+    table = _resource().Table(settings.DYNAMODB_TABLE)
+
+    # Fetch the share pointer
+    pointer = table.get_item(Key={"user_id": "share", "audit_id": token}).get("Item")
+    if not pointer:
+        return None
+
+    owner_id       = pointer["owner_id"]
+    real_audit_id  = pointer["real_audit_id"]
+
+    # Fetch the actual audit record
+    item = table.get_item(Key={"user_id": owner_id, "audit_id": real_audit_id}).get("Item")
+    if not item:
+        return None
+    return _to_native(item)

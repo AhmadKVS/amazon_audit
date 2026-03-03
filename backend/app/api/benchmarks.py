@@ -90,11 +90,23 @@ BENCHMARK_META: dict[str, dict[str, dict]] = {
 
 def _strip_code_fences(text: str) -> str:
     """Remove markdown code fences that LLMs sometimes include."""
+    import re
     text = text.strip()
-    if text.startswith("```"):
-        lines = text.splitlines()
-        # Drop first line (```json or ```) and last line (```)
-        text = "\n".join(lines[1:-1] if lines[-1].strip() == "```" else lines[1:])
+    # Try regex extraction first (handles fences anywhere in text)
+    fence_match = re.search(r"```(?:\w+)?\s*([\s\S]*?)```", text)
+    if fence_match:
+        return fence_match.group(1).strip()
+    # Fallback: find the JSON object by braces
+    start = text.find("{")
+    if start != -1:
+        depth = 0
+        for i in range(start, len(text)):
+            if text[i] == "{":
+                depth += 1
+            elif text[i] == "}":
+                depth -= 1
+                if depth == 0:
+                    return text[start : i + 1]
     return text.strip()
 
 
@@ -111,6 +123,14 @@ async def get_benchmarks(report_type: str, user: str = Depends(get_current_user)
     if not prompt:
         raise HTTPException(400, f"No benchmarks available for report type: {report_type!r}")
 
+    # Build a JSON schema from the expected keys for this report type
+    meta = BENCHMARK_META.get(report_type, {})
+    benchmark_schema = {
+        "type": "object",
+        "properties": {k: {"type": "number"} for k in meta},
+        "required": list(meta.keys()),
+    }
+
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
             resp = await client.post(
@@ -121,6 +141,13 @@ async def get_benchmarks(report_type: str, user: str = Depends(get_current_user)
                 },
                 json={
                     "model": "sonar",
+                    "response_format": {
+                        "type": "json_schema",
+                        "json_schema": {
+                            "name": f"benchmarks_{report_type}",
+                            "schema": benchmark_schema,
+                        },
+                    },
                     "messages": [
                         {
                             "role": "system",
@@ -137,7 +164,13 @@ async def get_benchmarks(report_type: str, user: str = Depends(get_current_user)
     except httpx.TimeoutException:
         raise HTTPException(504, "Benchmark service timed out — try again")
     except httpx.HTTPStatusError as e:
-        raise HTTPException(502, f"Perplexity API error {e.response.status_code}")
+        detail = ""
+        try:
+            detail = e.response.text
+        except Exception:
+            pass
+        print(f"[benchmarks] Perplexity API error {e.response.status_code}: {detail}")
+        raise HTTPException(502, f"Perplexity API error {e.response.status_code}: {detail}")
 
     raw_content = resp.json()["choices"][0]["message"]["content"]
     citations = resp.json().get("citations", [])

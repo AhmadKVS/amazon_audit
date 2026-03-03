@@ -13,17 +13,24 @@ async def upload_to_s3(
     filename: str,
     report_type: str,
     user_id: Optional[str] = None,
+    content_type: str = "text/csv",
 ) -> Optional[str]:
     """
     Upload CSV to S3. Returns S3 key or None if bucket not configured.
     """
-    if not settings.S3_BUCKET or settings.S3_BUCKET == "amazon-audit-uploads":
-        # Default bucket name - S3 not yet deployed
+    if not settings.S3_BUCKET or not settings.AWS_ACCESS_KEY_ID or not settings.AWS_SECRET_ACCESS_KEY:
+        print(f"[s3] Skipping upload — bucket={bool(settings.S3_BUCKET)} key={bool(settings.AWS_ACCESS_KEY_ID)} secret={bool(settings.AWS_SECRET_ACCESS_KEY)}")
         return None
 
     try:
         import boto3
-        s3 = boto3.client("s3", region_name=settings.AWS_REGION)
+        print(f"[s3] Uploading to bucket={settings.S3_BUCKET} region={settings.AWS_REGION}")
+        s3 = boto3.client(
+            "s3",
+            region_name=settings.AWS_REGION,
+            aws_access_key_id=settings.AWS_ACCESS_KEY_ID,
+            aws_secret_access_key=settings.AWS_SECRET_ACCESS_KEY,
+        )
         timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
         prefix = f"uploads/{report_type}"
         if user_id:
@@ -34,8 +41,9 @@ async def upload_to_s3(
             Bucket=settings.S3_BUCKET,
             Key=key,
             Body=contents,
-            ContentType="text/csv",
+            ContentType=content_type,
         )
         return key
-    except Exception:
+    except Exception as e:
+        print(f"[s3] Upload failed: {e}")
         return None

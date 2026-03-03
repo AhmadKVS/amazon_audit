@@ -10,7 +10,12 @@ from app.core.config import settings
 
 
 def _cognito():
-    return boto3.client("cognito-idp", region_name=settings.AWS_REGION)
+    return boto3.client(
+        "cognito-idp",
+        region_name=settings.AWS_REGION,
+        aws_access_key_id=settings.AWS_ACCESS_KEY_ID or None,
+        aws_secret_access_key=settings.AWS_SECRET_ACCESS_KEY or None,
+    )
 
 
 async def get_current_user(authorization: str = Header(default=None)) -> str:
@@ -37,13 +42,15 @@ async def get_current_user(authorization: str = Header(default=None)) -> str:
         return user["Username"]
     except ClientError as e:
         code = e.response["Error"]["Code"]
-        if code in ("NotAuthorizedException", "UserNotFoundException"):
+        if code in ("NotAuthorizedException", "UserNotFoundException", "TokenExpiredException"):
             raise HTTPException(
                 status_code=401,
                 detail="Invalid or expired token — please sign in again",
                 headers={"WWW-Authenticate": "Bearer"},
             )
-        raise HTTPException(status_code=500, detail=f"Auth check failed: {code}")
+        raise HTTPException(status_code=401, detail=f"Auth check failed: {code}")
+    except Exception as e:
+        raise HTTPException(status_code=401, detail=f"Auth unavailable: {str(e)}")
 
 
 # Shorthand for use in route signatures

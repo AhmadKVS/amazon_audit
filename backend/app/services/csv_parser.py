@@ -1,6 +1,6 @@
 """
-CSV Parser - Pandas-based parsing for Amazon report types
-Week 1: AUD-1 - Business Reports, Active Listings, Account Health, Ads, FBA Inventory
+File Parser - Pandas-based parsing for CSV, Excel, Word, and PDF uploads.
+Supports Amazon Seller Central exports (CSV/Excel) and client documents (Word/PDF).
 """
 import io
 import pandas as pd
@@ -46,3 +46,54 @@ def detect_report_type(df: pd.DataFrame) -> str:
         return "fba_inventory"
 
     return "unknown"
+
+
+def parse_excel(contents: bytes) -> pd.DataFrame:
+    """Parse Excel (.xlsx / .xls) bytes into a DataFrame."""
+    df = pd.read_excel(io.BytesIO(contents))
+    if df.empty:
+        raise ValueError("Excel file is empty")
+    return df
+
+
+def parse_docx(contents: bytes) -> str:
+    """Extract all paragraph text from a Word (.docx) document."""
+    from docx import Document  # python-docx
+    doc = Document(io.BytesIO(contents))
+    text = "\n".join(p.text for p in doc.paragraphs if p.text.strip())
+    if not text:
+        raise ValueError("Word document contains no readable text")
+    return text
+
+
+def parse_pdf(contents: bytes) -> tuple[Optional[pd.DataFrame], str]:
+    """
+    Extract tables and text from a PDF.
+    Returns (dataframe_or_None, raw_text).
+    If a table is found it is returned as a DataFrame; raw text is always returned.
+    """
+    import pdfplumber
+    all_text: list[str] = []
+    first_df: Optional[pd.DataFrame] = None
+
+    with pdfplumber.open(io.BytesIO(contents)) as pdf:
+        for page in pdf.pages:
+            # Try to extract tables first
+            if first_df is None:
+                tables = page.extract_tables()
+                for table in tables:
+                    if table and len(table) > 1:
+                        headers = [str(h or "").strip() for h in table[0]]
+                        rows = [[str(c or "").strip() for c in row] for row in table[1:]]
+                        candidate = pd.DataFrame(rows, columns=headers)
+                        if not candidate.empty:
+                            first_df = candidate
+                            break
+            text = page.extract_text() or ""
+            if text.strip():
+                all_text.append(text)
+
+    raw_text = "\n".join(all_text)
+    if not raw_text and first_df is None:
+        raise ValueError("PDF contains no extractable text or tables")
+    return first_df, raw_text

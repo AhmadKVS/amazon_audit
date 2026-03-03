@@ -66,11 +66,21 @@ def _extract_json(text: str) -> str:
     if text.startswith("{"):
         return text
 
-    # Otherwise find the first '{' and the last '}' and extract between them
+    # Otherwise find the first '{' and the matching '}' using brace depth
     start = text.find("{")
-    end   = text.rfind("}")
-    if start != -1 and end != -1 and end > start:
-        return text[start : end + 1]
+    if start != -1:
+        depth = 0
+        for i in range(start, len(text)):
+            if text[i] == "{":
+                depth += 1
+            elif text[i] == "}":
+                depth -= 1
+                if depth == 0:
+                    return text[start : i + 1]
+        # Fallback: first '{' to last '}'
+        end = text.rfind("}")
+        if end > start:
+            return text[start : end + 1]
 
     return text
 
@@ -155,6 +165,45 @@ async def _synthesize(client: httpx.AsyncClient, research_context: str, req: Ana
         headers=_auth_headers(),
         json={
             "model": "sonar-pro",
+            "response_format": {
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "audit_synthesis",
+                    "schema": {
+                        "type": "object",
+                        "properties": {
+                            "brand_analysis": {
+                                "type": "object",
+                                "properties": {
+                                    "summary": {"type": "string"},
+                                    "competitive_landscape": {"type": "string"},
+                                    "top_seller_traits": {
+                                        "type": "array",
+                                        "items": {"type": "string"},
+                                    },
+                                },
+                                "required": ["summary", "competitive_landscape", "top_seller_traits"],
+                            },
+                            "recommendations": {
+                                "type": "array",
+                                "items": {
+                                    "type": "object",
+                                    "properties": {
+                                        "title": {"type": "string"},
+                                        "description": {"type": "string"},
+                                        "priority": {
+                                            "type": "string",
+                                            "enum": ["high", "medium", "low"],
+                                        },
+                                    },
+                                    "required": ["title", "description", "priority"],
+                                },
+                            },
+                        },
+                        "required": ["brand_analysis", "recommendations"],
+                    },
+                },
+            },
             "messages": [
                 {
                     "role": "system",
@@ -223,13 +272,22 @@ async def analyze(req: AnalyzeRequest, user: str = Depends(get_current_user)):
 
             research_context = "\n\n".join(context_sections)
 
-            # ── Step 2: Synthesis ──────────────────────────────────────────
-            synthesis = await _synthesize(client, research_context, req)
+            # ── Step 2: Synthesis (with one retry on parse failure) ────────
+            try:
+                synthesis = await _synthesize(client, research_context, req)
+            except json.JSONDecodeError:
+                synthesis = await _synthesize(client, research_context, req)
 
     except httpx.TimeoutException:
         raise HTTPException(504, "AI service timed out — try again")
     except httpx.HTTPStatusError as e:
-        raise HTTPException(502, f"Perplexity API error {e.response.status_code}")
+        detail = ""
+        try:
+            detail = e.response.text
+        except Exception:
+            pass
+        print(f"[audit] Perplexity API error {e.response.status_code}: {detail}")
+        raise HTTPException(502, f"Perplexity API error {e.response.status_code}: {detail}")
     except json.JSONDecodeError:
         raise HTTPException(500, "Could not parse AI synthesis response — try again")
 
@@ -296,8 +354,38 @@ async def save_audit(req: SaveAuditRequest, user: str = Depends(get_current_user
 @router.get("/list")
 async def list_audits(user: str = Depends(get_current_user)):
     """Return all saved audits for the current user, newest first."""
+    print(f"[audit] /list called — authenticated user_id={user!r}")
     try:
         audits = dynamo_list(user)
     except Exception as e:
+        print(f"[audit] /list error: {e}")
         raise HTTPException(500, f"Failed to list audits: {e}")
+    print(f"[audit] /list returning {len(audits)} audits")
     return {"audits": audits}
+
+
+@router.get("/debug-users")
+async def debug_users(user: str = Depends(get_current_user)):
+    """TEMPORARY: Show all distinct user_ids in the table for debugging."""
+    import boto3 as _boto3
+    table = _boto3.resource(
+        "dynamodb",
+        region_name=settings.AWS_REGION,
+        aws_access_key_id=settings.AWS_ACCESS_KEY_ID or None,
+        aws_secret_access_key=settings.AWS_SECRET_ACCESS_KEY or None,
+    ).Table(settings.DYNAMODB_TABLE)
+    resp = table.scan(ProjectionExpression="user_id, audit_id, brand_name, created_at")
+    items = resp.get("Items", [])
+    return {
+        "current_user": user,
+        "total_items": len(items),
+        "items": [
+            {
+                "user_id": item.get("user_id"),
+                "audit_id": item.get("audit_id"),
+                "brand_name": item.get("brand_name", ""),
+                "created_at": item.get("created_at", ""),
+            }
+            for item in items
+        ],
+    }
