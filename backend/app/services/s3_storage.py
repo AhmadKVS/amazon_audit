@@ -47,3 +47,28 @@ async def upload_to_s3(
     except Exception as e:
         print(f"[s3] Upload failed: {e}")
         return None
+
+
+async def download_from_s3(s3_key: str) -> Optional[tuple[bytes, str]]:
+    """
+    Download a file from S3 by key.
+    Returns (contents, content_type) or None if not available.
+    """
+    if not settings.S3_BUCKET or not settings.AWS_ACCESS_KEY_ID or not settings.AWS_SECRET_ACCESS_KEY:
+        return None
+
+    try:
+        import boto3
+        s3 = boto3.client(
+            "s3",
+            region_name=settings.AWS_REGION,
+            aws_access_key_id=settings.AWS_ACCESS_KEY_ID,
+            aws_secret_access_key=settings.AWS_SECRET_ACCESS_KEY,
+        )
+        resp = s3.get_object(Bucket=settings.S3_BUCKET, Key=s3_key)
+        contents = resp["Body"].read()
+        content_type = resp.get("ContentType", "application/octet-stream")
+        return contents, content_type
+    except Exception as e:
+        print(f"[s3] Download failed for key={s3_key}: {e}")
+        return None

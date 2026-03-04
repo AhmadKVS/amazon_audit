@@ -16,7 +16,7 @@ from pydantic import BaseModel
 
 from app.core.config import settings
 from app.core.dependencies import get_current_user
-from app.services.dynamo import save_audit as dynamo_save, list_audits as dynamo_list
+from app.services.dynamo import save_audit as dynamo_save, list_audits as dynamo_list, get_audit as dynamo_get, delete_audit as dynamo_delete
 
 router = APIRouter()
 
@@ -339,6 +339,7 @@ class SaveAuditRequest(BaseModel):
     benchmark_metrics: list = []
     csv_metadata:     dict = {}
     citations:        list = []
+    s3_key:           str  = ""
 
 
 @router.post("/save")
@@ -389,3 +390,26 @@ async def debug_users(user: str = Depends(get_current_user)):
             for item in items
         ],
     }
+
+
+# ── Delete single audit (MUST be before /{audit_id} GET) ──────────────────
+
+@router.delete("/{audit_id}")
+async def delete_audit(audit_id: str, user: str = Depends(get_current_user)):
+    """Delete a single saved audit for the current user."""
+    try:
+        dynamo_delete(user, audit_id)
+    except Exception as e:
+        raise HTTPException(500, f"Failed to delete audit: {e}")
+    return {"success": True}
+
+
+# ── Get single audit (MUST be after /list and /debug-users) ───────────────
+
+@router.get("/{audit_id}")
+async def get_audit(audit_id: str, user: str = Depends(get_current_user)):
+    """Return a single saved audit. Returns 404 if not found."""
+    item = dynamo_get(user, audit_id)
+    if not item:
+        raise HTTPException(404, "Audit not found")
+    return item

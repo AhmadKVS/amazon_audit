@@ -97,3 +97,79 @@ def parse_pdf(contents: bytes) -> tuple[Optional[pd.DataFrame], str]:
     if not raw_text and first_df is None:
         raise ValueError("PDF contains no extractable text or tables")
     return first_df, raw_text
+
+
+# ── ASIN-level metric extraction for Business Reports ────────────────────
+
+# Column name patterns → standardised keys (case-insensitive substring match)
+_ASIN_COL_PATTERNS: dict[str, list[str]] = {
+    "asin":            ["(child) asin", "child asin", "asin"],
+    "parent_asin":     ["(parent) asin", "parent asin"],
+    "title":           ["title", "product name"],
+    "sessions":        ["sessions - total", "sessions"],
+    "conversion_rate": ["unit session percentage", "session percentage", "conversion rate"],
+    "units_sold":      ["units ordered", "units sold"],
+    "revenue":         ["ordered product sales", "ordered revenue", "product sales"],
+    "page_views":      ["page views", "pageviews"],
+    "ad_spend":        ["spend", "ad spend", "total spend"],
+    "acos":            ["acos", "advertising cost"],
+}
+
+
+def _find_column(columns: list[str], patterns: list[str]) -> Optional[str]:
+    """Find the first column whose lowercased name contains any of the given patterns."""
+    cols_lower = [(c, str(c).lower()) for c in columns]
+    for pattern in patterns:
+        for orig, low in cols_lower:
+            if pattern in low:
+                return str(orig)
+    return None
+
+
+def _parse_numeric(val: str) -> Optional[float]:
+    """Parse a numeric string, stripping currency symbols, commas, and percent signs."""
+    if pd.isna(val):
+        return None
+    cleaned = str(val).replace(",", "").replace("$", "").replace("%", "").replace("£", "").replace("€", "").strip()
+    try:
+        return float(cleaned)
+    except (ValueError, TypeError):
+        return None
+
+
+def extract_asin_metrics(df: pd.DataFrame) -> list[dict]:
+    """
+    Extract per-ASIN metrics from an Amazon Business Report DataFrame.
+    Returns a list of dicts with standardised keys:
+      asin, title, sessions, conversion_rate, units_sold, revenue, ad_spend, acos
+    """
+    columns = [str(c) for c in df.columns]
+
+    col_map: dict[str, Optional[str]] = {}
+    for key, patterns in _ASIN_COL_PATTERNS.items():
+        col_map[key] = _find_column(columns, patterns)
+
+    asin_col = col_map.get("asin")
+    if not asin_col:
+        return []
+
+    results: list[dict] = []
+    for _, row in df.iterrows():
+        asin_val = str(row.get(asin_col, "")).strip()
+        if not asin_val or asin_val.lower() in ("nan", ""):
+            continue
+
+        entry: dict = {"asin": asin_val}
+        entry["title"] = str(row.get(col_map.get("title", ""), "")).strip() if col_map.get("title") else ""
+
+        for key in ("sessions", "conversion_rate", "units_sold", "revenue", "ad_spend", "acos"):
+            col = col_map.get(key)
+            if col and col in row.index:
+                parsed = _parse_numeric(row[col])
+                entry[key] = parsed if parsed is not None else 0
+            else:
+                entry[key] = 0
+
+        results.append(entry)
+
+    return results

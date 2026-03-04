@@ -7,7 +7,7 @@ import uuid
 from fastapi import APIRouter, Depends, HTTPException, Request
 
 from app.core.dependencies import get_current_user
-from app.services.dynamo import set_share_token, get_audit_by_token
+from app.services.dynamo import set_share_token, get_audit_by_token, find_previous_audit
 
 router = APIRouter()
 
@@ -42,5 +42,23 @@ async def get_shared_audit(token: str):
 
     if not audit:
         raise HTTPException(404, "Share link not found or expired")
+
+    # Attach the previous audit for the same brand/report type (for progress tracking)
+    try:
+        prev = find_previous_audit(
+            user_id=audit["user_id"],
+            brand_name=audit.get("brand_name", ""),
+            report_type=audit.get("report_type", ""),
+            current_audit_id=audit["audit_id"],
+        )
+        if prev:
+            audit["prev_audit"] = {
+                "csv_metadata": prev.get("csv_metadata"),
+                "created_at":   prev.get("created_at"),
+                "raw_text":     prev.get("raw_text"),
+            }
+    except Exception:
+        # Never let prev-audit lookup break the share page
+        pass
 
     return audit

@@ -94,6 +94,7 @@ def save_audit(user_id: str, audit_id: str, data: dict) -> None:
         "benchmark_metrics": data.get("benchmark_metrics", []),
         "csv_metadata":     data.get("csv_metadata", {}),
         "citations":        data.get("citations", []),
+        "s3_key":           data.get("s3_key", ""),
     })
     try:
         table.put_item(Item=item)
@@ -112,6 +113,27 @@ def _to_native(obj):
     if isinstance(obj, list):
         return [_to_native(v) for v in obj]
     return obj
+
+
+def get_audit(user_id: str, audit_id: str) -> dict | None:
+    """Return a single full audit record, or None if not found."""
+    table = _resource().Table(settings.DYNAMODB_TABLE)
+    item = table.get_item(Key={"user_id": user_id, "audit_id": audit_id}).get("Item")
+    if not item:
+        return None
+    return _to_native(item)
+
+
+def delete_audit(user_id: str, audit_id: str) -> None:
+    """Delete a single audit record by composite key (user_id HASH, audit_id RANGE)."""
+    print(f"[dynamo] delete_audit user_id={user_id!r} audit_id={audit_id!r}")
+    table = _resource().Table(settings.DYNAMODB_TABLE)
+    try:
+        table.delete_item(Key={"user_id": user_id, "audit_id": audit_id})
+        print(f"[dynamo] delete_audit SUCCESS")
+    except Exception as e:
+        print(f"[dynamo] delete_audit FAILED: {e}")
+        raise
 
 
 def list_audits(user_id: str) -> list[dict]:
@@ -141,6 +163,26 @@ def set_share_token(user_id: str, audit_id: str, token: str) -> None:
         "real_audit_id": audit_id,
         "created_at": datetime.now(timezone.utc).isoformat(),
     })
+
+
+def find_previous_audit(user_id: str, brand_name: str, report_type: str, current_audit_id: str) -> dict | None:
+    """Return the most recent prior audit for the same user, brand, and report type."""
+    table = _resource().Table(settings.DYNAMODB_TABLE)
+    resp = table.query(
+        KeyConditionExpression=boto3.dynamodb.conditions.Key("user_id").eq(user_id),
+        ProjectionExpression="audit_id, brand_name, report_type, created_at, csv_metadata, raw_text",
+    )
+    items = resp.get("Items", [])
+    candidates = [
+        item for item in items
+        if item.get("brand_name") == brand_name
+        and item.get("report_type") == report_type
+        and item.get("audit_id") != current_audit_id
+    ]
+    if not candidates:
+        return None
+    candidates.sort(key=lambda x: x.get("created_at", ""), reverse=True)
+    return _to_native(candidates[0])
 
 
 def get_audit_by_token(token: str) -> dict | None:

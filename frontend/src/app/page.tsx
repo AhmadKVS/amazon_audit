@@ -4,6 +4,8 @@ import { useState, useRef, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { isAuthenticated, signOut, fetchWithAuth } from "@/lib/auth";
+import { getCachedAuditList, setCachedAuditList, removeCachedReport } from "@/lib/cache";
+import { extractAsinMetrics, isBusinessReportCsv } from "@/lib/csvMetrics";
 
 // ── CSV helpers ────────────────────────────────────────────────────────────
 
@@ -111,6 +113,14 @@ function PastAuditsPanel() {
   const [error, setError]     = useState<string | null>(null);
 
   useEffect(() => {
+    // Show cached list instantly if available
+    const cached = getCachedAuditList() as PastAudit[] | null;
+    if (cached) {
+      setAudits(cached);
+      setLoading(false);
+    }
+
+    // Refresh from API in background and update cache
     fetchWithAuth("/api/audit/list")
       .then((r) => {
         if (r.status === 401) { router.push("/login"); return Promise.reject("session expired"); }
@@ -118,14 +128,14 @@ function PastAuditsPanel() {
         return r.json();
       })
       .then((d: { audits?: PastAudit[] }) => {
-        console.log("[PastAudits] response:", d);
-        setAudits(d.audits ?? []);
+        const fresh = d.audits ?? [];
+        setAudits(fresh);
+        setCachedAuditList(fresh);
       })
       .catch((e: unknown) => {
         const msg = String(e);
         if (msg === "session expired") return;
-        console.error("[PastAudits] error:", e);
-        setError(msg);
+        if (!cached) setError(msg); // only show error if no cache fallback
       })
       .finally(() => setLoading(false));
   }, [router]);
@@ -144,8 +154,25 @@ function PastAuditsPanel() {
       report_type:   a.report_type,
       audit_purpose: a.audit_purpose,
       notes:         a.notes,
+      saved:         "true",
     });
     return `/audit/${a.audit_id}?${params.toString()}`;
+  };
+
+  const handleDelete = async (e: React.MouseEvent, auditId: string) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (!window.confirm("Delete this audit report? This cannot be undone.")) return;
+    try {
+      const res = await fetchWithAuth(`/api/audit/${auditId}`, { method: "DELETE" });
+      if (!res.ok) return;
+      const updated = audits.filter((a) => a.audit_id !== auditId);
+      setAudits(updated);
+      setCachedAuditList(updated);
+      removeCachedReport(auditId);
+    } catch {
+      // silently ignore network errors
+    }
   };
 
   if (loading) {
@@ -183,9 +210,11 @@ function PastAuditsPanel() {
     );
   }
 
+  const visibleAudits = audits.slice(0, 5);
+
   return (
     <div className="space-y-3">
-      {audits.map((audit) => {
+      {visibleAudits.map((audit) => {
         const color = REPORT_COLORS[audit.report_type] || "#f59e0b";
         return (
           <div key={audit.audit_id}
@@ -209,12 +238,24 @@ function PastAuditsPanel() {
                 </div>
                 <p className="text-xs text-slate-600 mt-1.5">{formatDate(audit.created_at)}</p>
               </div>
-              <Link
-                href={auditHref(audit)}
-                className="shrink-0 text-xs text-amber-400 hover:text-amber-300 font-medium transition-colors whitespace-nowrap"
-              >
-                View Report →
-              </Link>
+              <div className="shrink-0 flex items-center gap-2">
+                <Link
+                  href={auditHref(audit)}
+                  className="text-xs text-amber-400 hover:text-amber-300 font-medium transition-colors whitespace-nowrap"
+                >
+                  View Report →
+                </Link>
+                <button
+                  onClick={(e) => handleDelete(e, audit.audit_id)}
+                  title="Delete audit"
+                  className="text-red-400 hover:text-red-300 transition-colors p-0.5"
+                >
+                  <svg className="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                      d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                  </svg>
+                </button>
+              </div>
             </div>
           </div>
         );
@@ -230,6 +271,7 @@ export default function Dashboard() {
   const [authChecked, setAuthChecked] = useState(false);
 
   const [brandName, setBrandName]       = useState("");
+  const [brandFocused, setBrandFocused] = useState(false);
   const [niche, setNiche]               = useState("");
   const [storeUrl, setStoreUrl]         = useState("");
   const [marketplace, setMarketplace]   = useState("Amazon US");
@@ -239,7 +281,9 @@ export default function Dashboard() {
   const [uploadedFile, setUploadedFile] = useState<UploadedFile | null>(null);
   const [isDragging, setIsDragging]     = useState(false);
   const [fileError, setFileError]       = useState<string | null>(null);
+  const [uploadProgress, setUploadProgress] = useState(0); // 0 = idle, 1-100 = uploading
   const [submitting, setSubmitting]     = useState(false);
+  const [detailedReport, setDetailedReport] = useState(false);
 
   const inputRef = useRef<HTMLInputElement>(null);
 
@@ -249,6 +293,19 @@ export default function Dashboard() {
   }, [router]);
 
   const handleSignOut = async () => { await signOut(); router.replace("/login"); };
+
+  // Get existing brand names for autocomplete
+  const existingBrands = (() => {
+    const cached = getCachedAuditList() as { brand_name?: string }[] | null;
+    if (!cached) return [];
+    const set = new Set(cached.map((a) => a.brand_name).filter(Boolean) as string[]);
+    return Array.from(set).sort();
+  })();
+  const brandSuggestions = brandFocused && brandName.length > 0
+    ? existingBrands.filter((b) => b.toLowerCase().includes(brandName.toLowerCase()) && b !== brandName)
+    : brandFocused && brandName.length === 0
+      ? existingBrands
+      : [];
 
   const processFile = async (file: File) => {
     const ext = file.name.includes(".")
@@ -260,6 +317,7 @@ export default function Dashboard() {
       return;
     }
     setFileError(null);
+    setUploadProgress(10);
 
     // Read file as base64 for later viewing/downloading
     const fileBase64 = await new Promise<string>((resolve) => {
@@ -268,10 +326,13 @@ export default function Dashboard() {
       reader.readAsDataURL(file);
     });
     const fileMime = file.type || "application/octet-stream";
+    setUploadProgress(30);
 
     // CSV: parse client-side (fast, no round-trip needed)
     if (ext === "csv") {
+      setUploadProgress(50);
       const text = await file.text();
+      setUploadProgress(70);
       const { headers, rows } = parseLocalCsv(text);
       if (!headers.length) { setFileError("CSV file appears to be empty."); return; }
       const rowCount = text.split(/\r?\n/).filter((l) => l.trim()).length - 1;
@@ -282,20 +343,25 @@ export default function Dashboard() {
         columns: headers, preview: rows,
         file_data: fileBase64, file_mime: fileMime,
       });
+      setUploadProgress(0);
       return;
     }
 
     // Excel / Word / PDF: send to backend for parsing
     setFileError(null);
+    setUploadProgress(40);
     try {
       const form = new FormData();
       form.append("file", file);
+      setUploadProgress(50);
       const resp = await fetchWithAuth("/api/upload/csv", { method: "POST", body: form });
+      setUploadProgress(75);
       if (!resp.ok) {
         const err = await resp.json().catch(() => ({ detail: "Upload failed" }));
         setFileError(err.detail ?? "Upload failed");
         return;
       }
+      setUploadProgress(90);
       const data = await resp.json();
       setUploadedFile({
         name:        data.filename,
@@ -313,6 +379,8 @@ export default function Dashboard() {
       }
     } catch {
       setFileError("Failed to upload file — please try again");
+    } finally {
+      setUploadProgress(0);
     }
   };
 
@@ -333,15 +401,40 @@ export default function Dashboard() {
     if (!brandName.trim()) return;
     setSubmitting(true);
     const auditId    = crypto.randomUUID();
-    const reportType = uploadedFile?.report_type ?? fileType;
+    const reportType = fileType;
+
+    // Detailed Business Report flow: extract ASIN metrics and route to /business-report
+    if (detailedReport && uploadedFile && showDetailedToggle) {
+      const asinMetrics = extractAsinMetrics(uploadedFile.preview, uploadedFile.columns);
+      sessionStorage.setItem(`business_report_${auditId}`, JSON.stringify({
+        asin_metrics: asinMetrics,
+        csv_metadata: { filename: uploadedFile.name, rows: uploadedFile.rows, columns: uploadedFile.columns },
+      }));
+      const params = new URLSearchParams({
+        brand_name: brandName.trim(), niche: niche.trim(), marketplace,
+        audit_purpose: auditPurpose.trim(), notes: notes.trim(),
+      });
+      router.push(`/business-report/${auditId}?${params.toString()}`);
+      return;
+    }
+
+    // Standard audit flow
     if (uploadedFile) {
+      // Store essential data (columns, preview) first — always small enough
       sessionStorage.setItem(`audit_${auditId}`, JSON.stringify({
         report_type: reportType, rows: uploadedFile.rows,
         columns: uploadedFile.columns, preview: uploadedFile.preview,
         filename: uploadedFile.name, file_type: uploadedFile.file_type,
         raw_text: uploadedFile.raw_text, s3_key: uploadedFile.s3_key,
-        file_data: uploadedFile.file_data, file_mime: uploadedFile.file_mime,
       }));
+      // Store large file blob separately — may exceed quota for big PDFs
+      if (uploadedFile.file_data) {
+        try {
+          sessionStorage.setItem(`audit_file_${auditId}`, JSON.stringify({
+            file_data: uploadedFile.file_data, file_mime: uploadedFile.file_mime,
+          }));
+        } catch { /* quota exceeded — download will fall back to S3 */ }
+      }
     }
     const params = new URLSearchParams({
       brand_name: brandName.trim(), niche: niche.trim(), marketplace,
@@ -360,12 +453,21 @@ export default function Dashboard() {
 
   const fileTypeLabel = FILE_TYPES.find((f) => f.value === fileType)?.label ?? "File";
 
+  // Show the detailed business report toggle when a business report CSV with ASIN data is uploaded
+  const showDetailedToggle = uploadedFile
+    && (uploadedFile.report_type === "business_report" || fileType === "business_report")
+    && isBusinessReportCsv(uploadedFile.columns);
+
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100">
       {/* Header */}
       <header className="border-b border-slate-800 bg-slate-900/50 backdrop-blur sticky top-0 z-10">
         <div className="mx-auto flex h-16 max-w-7xl items-center justify-between px-6">
-          <h1 className="text-xl font-semibold tracking-tight text-amber-400">Amazon Audit</h1>
+          <div className="flex items-center gap-4">
+            <h1 className="text-xl font-semibold tracking-tight text-amber-400">Amazon Audit</h1>
+            <Link href="/audits" className="text-sm text-slate-400 hover:text-slate-100 transition-colors">All Audits</Link>
+            <Link href="/progress" className="text-sm text-slate-400 hover:text-slate-100 transition-colors">Progress</Link>
+          </div>
           <button onClick={handleSignOut} className="text-sm text-slate-400 hover:text-amber-400 transition-colors">
             Sign out
           </button>
@@ -390,11 +492,25 @@ export default function Dashboard() {
               </div>
 
               <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                <div>
+                <div className="relative">
                   <label className="block text-xs font-medium text-slate-400 mb-1">Brand Name <span className="text-red-400">*</span></label>
-                  <input type="text" value={brandName} onChange={(e) => setBrandName(e.target.value)}
-                    placeholder="e.g. Crystal Clean Car Care" required
+                  <input type="text" value={brandName}
+                    onChange={(e) => setBrandName(e.target.value)}
+                    onFocus={() => setBrandFocused(true)}
+                    onBlur={() => setTimeout(() => setBrandFocused(false), 150)}
+                    placeholder="e.g. Crystal Clean Car Care" required autoComplete="off"
                     className="block w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-slate-100 placeholder-slate-500 focus:border-amber-500 focus:ring-1 focus:ring-amber-500 outline-none transition" />
+                  {brandSuggestions.length > 0 && (
+                    <div className="absolute z-20 top-full left-0 right-0 mt-1 rounded-lg border border-slate-700 bg-slate-800 shadow-xl max-h-40 overflow-y-auto">
+                      {brandSuggestions.map((b) => (
+                        <button key={b} type="button"
+                          onMouseDown={() => { setBrandName(b); setBrandFocused(false); }}
+                          className="w-full text-left px-3 py-2 text-sm text-slate-200 hover:bg-slate-700/60 transition-colors truncate">
+                          {b}
+                        </button>
+                      ))}
+                    </div>
+                  )}
                 </div>
                 <div>
                   <label className="block text-xs font-medium text-slate-400 mb-1">Product Niche</label>
@@ -439,7 +555,20 @@ export default function Dashboard() {
 
                 <input ref={inputRef} type="file" accept=".csv,.xlsx,.xls,.docx,.pdf" onChange={handleFileInput} className="hidden" />
 
-                {uploadedFile ? (
+                {uploadProgress > 0 ? (
+                  <div className="rounded-lg border border-amber-500/40 bg-amber-500/10 px-4 py-4 flex items-center gap-3">
+                    <div className="w-5 h-5 rounded-full border-2 border-amber-400 border-t-transparent animate-spin shrink-0" />
+                    <div className="flex-1 min-w-0">
+                      <p className="text-xs font-medium text-amber-300">
+                        {uploadProgress < 30 ? "Reading file..." : uploadProgress < 60 ? "Processing data..." : uploadProgress < 90 ? "Analyzing report..." : "Finishing up..."}
+                      </p>
+                      <div className="mt-2 h-1.5 rounded-full bg-slate-700 overflow-hidden">
+                        <div className="h-full rounded-full bg-amber-400 transition-all duration-500 ease-out" style={{ width: `${uploadProgress}%` }} />
+                      </div>
+                      <p className="text-xs text-slate-500 mt-1">{uploadProgress}%</p>
+                    </div>
+                  </div>
+                ) : uploadedFile ? (
                   <div className="rounded-lg border border-emerald-500/40 bg-emerald-500/10 px-4 py-3 flex items-center justify-between">
                     <div className="flex items-center gap-2">
                       <svg className="h-4 w-4 text-emerald-400 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -479,10 +608,32 @@ export default function Dashboard() {
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
                         d="M12 9v2m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" />
                     </svg>
-                    <p className="text-xs text-amber-300">No data files uploaded. Reports require at least one data file to generate accurate analysis. You can add files later from the audit page.</p>
+                    <p className="text-xs text-amber-300">No data files uploaded. Reports require at least one data file to generate accurate analysis. You can't add files later from the audit page.</p>
                   </div>
                 )}
               </div>
+
+              {/* Detailed Business Report toggle */}
+              {showDetailedToggle && (
+                <button type="button" onClick={() => setDetailedReport(!detailedReport)}
+                  className={`w-full flex items-center gap-3 rounded-lg border px-4 py-3 transition-colors ${
+                    detailedReport
+                      ? "border-blue-500/50 bg-blue-500/10"
+                      : "border-slate-700 bg-slate-800/30 hover:border-slate-600"
+                  }`}>
+                  <div className={`w-9 h-5 rounded-full relative transition-colors ${detailedReport ? "bg-blue-500" : "bg-slate-600"}`}>
+                    <div className={`absolute top-0.5 w-4 h-4 rounded-full bg-white transition-transform ${detailedReport ? "left-[18px]" : "left-0.5"}`} />
+                  </div>
+                  <div className="text-left">
+                    <p className={`text-xs font-semibold ${detailedReport ? "text-blue-300" : "text-slate-300"}`}>
+                      Detailed Business Report Analysis
+                    </p>
+                    <p className="text-xs text-slate-500">
+                      Per-ASIN diagnostics, before/after projections, and executive summary
+                    </p>
+                  </div>
+                </button>
+              )}
 
               <div>
                 <label className="block text-xs font-medium text-slate-400 mb-1">Additional Notes</label>
@@ -494,7 +645,7 @@ export default function Dashboard() {
 
             <button type="submit" disabled={!brandName.trim() || submitting}
               className="w-full rounded-xl bg-amber-500 px-6 py-3 text-sm font-semibold text-slate-950 hover:bg-amber-400 disabled:opacity-50 disabled:cursor-not-allowed transition-colors">
-              {submitting ? "Starting audit..." : "Start Audit"}
+              {submitting ? "Starting audit..." : detailedReport && showDetailedToggle ? "Generate Business Report" : "Start Audit"}
             </button>
           </form>
         </div>
@@ -504,6 +655,12 @@ export default function Dashboard() {
           <div className="sticky top-24">
             <div className="flex items-center justify-between mb-4">
               <h2 className="text-lg font-semibold text-slate-100">Past Audits</h2>
+              <Link
+                href="/audits"
+                className="text-xs text-amber-400 hover:text-amber-300 font-medium transition-colors"
+              >
+                View All →
+              </Link>
             </div>
             <PastAuditsPanel />
           </div>

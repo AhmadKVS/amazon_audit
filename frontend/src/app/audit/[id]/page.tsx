@@ -7,6 +7,7 @@ import {
   BarChart, Bar, XAxis, YAxis, ResponsiveContainer, Tooltip, Cell, Legend,
 } from "recharts";
 import { fetchWithAuth, isAuthenticated } from "@/lib/auth";
+import { getCachedReport, setCachedReport, getCachedAuditList } from "@/lib/cache";
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -136,6 +137,69 @@ function extractUserMetric(
   return Math.round((values.reduce((a, b) => a + b, 0) / values.length) * 100) / 100;
 }
 
+/**
+ * Extract a metric value from unstructured text (PDF / Word docs).
+ * Looks for keyword near a number, e.g. "ACOS: 25.3%" or "Return Rate 4.1%".
+ */
+function extractMetricFromText(key: string, text: string): number | null {
+  const keywordMap: Record<string, string[]> = {
+    acos:                  ["acos", "advertising cost of sale"],
+    roas:                  ["roas", "return on ad spend"],
+    ctr:                   ["ctr", "click-through rate", "click through rate"],
+    cpc:                   ["cpc", "cost per click"],
+    conversion_rate:       ["conversion rate", "unit session percentage", "cvr"],
+    units_per_order:       ["units per order", "units ordered"],
+    buy_box_percentage:    ["buy box", "featured offer"],
+    return_rate:           ["return rate"],
+    order_defect_rate:     ["order defect", "odr"],
+    late_shipment_rate:    ["late shipment"],
+    valid_tracking_rate:   ["valid tracking"],
+    cancellation_rate:     ["cancellation rate"],
+    in_stock_rate:         ["in stock rate", "instock rate"],
+    inventory_turnover:    ["inventory turnover", "turnover rate"],
+    stranded_rate:         ["stranded rate", "stranded inventory"],
+    aged_inventory_rate:   ["aged inventory", "180 day", "180-day"],
+    listing_quality_score: ["quality score", "listing score"],
+    image_count:           ["image count", "images per"],
+    review_count:          ["review count", "number of reviews", "total reviews"],
+  };
+  const keywords = keywordMap[key];
+  if (!keywords) return null;
+
+  const lower = text.toLowerCase();
+  for (const kw of keywords) {
+    const idx = lower.indexOf(kw);
+    if (idx === -1) continue;
+    // Look for number within 50 chars after the keyword
+    const after = text.slice(idx + kw.length, idx + kw.length + 50);
+    const match = after.match(/[\s:=\-–—]*(\$?\d[\d,]*\.?\d*)\s*%?/);
+    if (match) {
+      const val = parseFloat(match[1].replace(/[$,]/g, ""));
+      if (!isNaN(val)) return Math.round(val * 100) / 100;
+    }
+  }
+  return null;
+}
+
+/**
+ * Universal metric extractor — works with CSV columns/preview OR raw text.
+ */
+function extractMetric(
+  key: string,
+  data: { preview?: Record<string, string>[]; columns?: string[]; raw_text?: string }
+): number | null {
+  // Try structured CSV data first
+  if (data.preview?.length && data.columns?.length) {
+    const val = extractUserMetric(key, data.preview, data.columns);
+    if (val !== null) return val;
+  }
+  // Fall back to raw text extraction (PDF / Word)
+  if (data.raw_text) {
+    return extractMetricFromText(key, data.raw_text);
+  }
+  return null;
+}
+
 function LoadingCard({ label }: { label: string }) {
   return (
     <div className="rounded-2xl border border-slate-800 bg-slate-900/50 p-8 flex flex-col items-center justify-center gap-3 min-h-[180px]">
@@ -243,6 +307,7 @@ function AuditResultsContent() {
   const reportType   = searchParams.get("report_type") ?? "business_report";
   const auditPurpose = searchParams.get("audit_purpose") ?? "";
   const notes        = searchParams.get("notes") ?? "";
+  const isSaved      = searchParams.get("saved") === "true";
 
   const [csvData, setCsvData]               = useState<CsvData | null>(null);
   const [sessionMissing, setSessionMissing] = useState(false);
@@ -260,6 +325,11 @@ function AuditResultsContent() {
   // Raw search results panel
   const [showRawSearch, setShowRawSearch] = useState(false);
 
+  // Progress tracking — compare with previous audit
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const [prevAudit, setPrevAudit] = useState<Record<string, any> | null>(null);
+  const [progressLoading, setProgressLoading] = useState(false);
+
   useEffect(() => {
     if (!isAuthenticated()) { router.replace("/login"); return; }
 
@@ -267,39 +337,159 @@ function AuditResultsContent() {
     const stored = sessionStorage.getItem(`audit_${auditId}`);
     let parsedCsv: CsvData | null = null;
     if (stored) {
-      try { parsedCsv = JSON.parse(stored); setCsvData(parsedCsv); }
+      try {
+        parsedCsv = JSON.parse(stored);
+        // Merge large file blob stored separately (may not exist if quota was exceeded)
+        const fileBlob = sessionStorage.getItem(`audit_file_${auditId}`);
+        if (fileBlob && parsedCsv) {
+          const { file_data, file_mime } = JSON.parse(fileBlob);
+          parsedCsv.file_data = file_data;
+          parsedCsv.file_mime = file_mime;
+        }
+        setCsvData(parsedCsv);
+      }
       catch { setSessionMissing(true); }
     } else {
       setSessionMissing(true);
     }
 
-    // ── Fetch benchmarks + analysis in parallel ─────────────────────────
-    const benchmarksPromise = fetchWithAuth(`/api/benchmarks/${reportType}`)
-      .then((r) => r.ok ? r.json() : r.json().then((d: { detail?: string }) => Promise.reject(d.detail ?? "Failed")))
-      .then((d: BenchmarkData) => { setBenchmarks(d); return d; })
-      .catch((e: unknown) => { setBenchmarksError(String(e)); return null as BenchmarkData | null; })
-      .finally(() => setBenchmarksLoading(false));
+    // ── Check localStorage cache first for instant display ──────────────
+    const cached = getCachedReport(auditId);
+    if (cached && cached.brand_analysis && Object.keys(cached.brand_analysis as object).length > 0) {
+      console.log("[audit] Loading from localStorage cache (instant)");
+      _applyData(cached);
+      return; // done — no API calls needed
+    }
 
-    const analysisPromise = fetchWithAuth("/api/audit/analyze", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ brand_name: brandName, niche, marketplace, report_type: reportType, audit_purpose: auditPurpose, notes }),
-    })
-      .then((r) => r.ok ? r.json() : r.json().then((d: { detail?: string }) => Promise.reject(d.detail ?? "Failed")))
-      .then((d: AnalyzeResponse) => { setAnalysis(d); return d; })
-      .catch((e: unknown) => { setAnalysisError(String(e)); return null as AnalyzeResponse | null; })
-      .finally(() => setAnalysisLoading(false));
+    // ── No local cache — try DynamoDB ───────────────────────────────────
+    fetchWithAuth(`/api/audit/${auditId}`)
+      .then((r) => {
+        if (r.status === 404) return null;
+        if (!r.ok) return null;
+        return r.json();
+      })
+      .then((saved) => {
+        if (saved && saved.brand_analysis && Object.keys(saved.brand_analysis).length > 0) {
+          console.log("[audit] Loading from DynamoDB (caching locally)");
+          setCachedReport(auditId, saved); // cache for next time
+          _applyData(saved);
+          return;
+        }
 
-    // ── Save to DynamoDB once BOTH complete ──────────────────────────────
-    Promise.all([analysisPromise, benchmarksPromise]).then(([analysisData, benchmarkData]) => {
-      if (!analysisData) return; // analysis failed — nothing to save
+        // No saved data found
+        if (isSaved) {
+          console.log("[audit] Saved audit has no data — skipping Perplexity");
+          setAnalysisError("Could not load saved report data. Please try again.");
+          setAnalysisLoading(false);
+          setBenchmarksLoading(false);
+          return;
+        }
+        console.log("[audit] No saved data found — calling Perplexity API");
+        _fetchFresh(parsedCsv);
+      })
+      .catch(() => {
+        if (isSaved) {
+          console.log("[audit] Network error loading saved audit — skipping Perplexity");
+          setAnalysisError("Could not load saved report. Please check your connection.");
+          setAnalysisLoading(false);
+          setBenchmarksLoading(false);
+          return;
+        }
+        _fetchFresh(parsedCsv);
+      });
 
-      console.log("[save] triggering save for audit", auditId);
-      fetchWithAuth("/api/audit/save", {
+    // ── Apply saved/cached data to state ────────────────────────────────
+    function _applyData(data: Record<string, unknown>) {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const d = data as any;
+      setAnalysis({
+        brand_name:     d.brand_name ?? brandName,
+        niche:          d.niche ?? niche,
+        marketplace:    d.marketplace ?? marketplace,
+        brand_analysis: d.brand_analysis,
+        recommendations: d.recommendations ?? [],
+        search_results: [],
+        citations:      d.citations ?? [],
+      });
+      setAnalysisLoading(false);
+
+      if (d.benchmark_metrics?.length) {
+        setBenchmarks({
+          report_type: d.report_type ?? reportType,
+          metrics:     d.benchmark_metrics,
+          citations:   d.citations ?? [],
+        });
+        setBenchmarksLoading(false);
+      } else {
+        _fetchBenchmarks();
+      }
+
+      // Restore uploaded file info if sessionStorage is empty
+      const s3Key = d.s3_key || d.csv_metadata?.s3_key;
+      const meta = d.csv_metadata ?? {};
+      if (!parsedCsv && (s3Key || meta.filename)) {
+        // Show filename immediately from metadata (include preview + raw_text for progress tracking)
+        setCsvData({
+          report_type: d.report_type ?? reportType,
+          rows:        meta.rows ?? 0,
+          columns:     meta.columns ?? [],
+          preview:     meta.preview ?? [],
+          filename:    meta.filename ?? "uploaded file",
+          raw_text:    meta.raw_text,
+          s3_key:      s3Key,
+        });
+        setSessionMissing(false);
+
+        // Then fetch actual file blob from S3 for download link
+        if (s3Key) {
+          fetchWithAuth(`/api/upload/file?s3_key=${encodeURIComponent(s3Key)}`)
+            .then((r) => r.ok ? r.json() : null)
+            .then((file) => {
+              if (!file) return;
+              setCsvData((prev) => prev ? {
+                ...prev,
+                file_data: file.file_data,
+                file_mime: file.content_type,
+                filename:  file.filename ?? prev.filename,
+              } : prev);
+            })
+            .catch(() => {});
+        }
+      }
+    }
+
+    function _fetchBenchmarks() {
+      fetchWithAuth(`/api/benchmarks/${reportType}`)
+        .then((r) => r.ok ? r.json() : r.json().then((d: { detail?: string }) => Promise.reject(d.detail ?? "Failed")))
+        .then((d: BenchmarkData) => { setBenchmarks(d); })
+        .catch((e: unknown) => { setBenchmarksError(String(e)); })
+        .finally(() => setBenchmarksLoading(false));
+    }
+
+    function _fetchFresh(csv: CsvData | null) {
+      const benchmarksPromise = fetchWithAuth(`/api/benchmarks/${reportType}`)
+        .then((r) => r.ok ? r.json() : r.json().then((d: { detail?: string }) => Promise.reject(d.detail ?? "Failed")))
+        .then((d: BenchmarkData) => { setBenchmarks(d); return d; })
+        .catch((e: unknown) => { setBenchmarksError(String(e)); return null as BenchmarkData | null; })
+        .finally(() => setBenchmarksLoading(false));
+
+      const analysisPromise = fetchWithAuth("/api/audit/analyze", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
+        body: JSON.stringify({ brand_name: brandName, niche, marketplace, report_type: reportType, audit_purpose: auditPurpose, notes }),
+      })
+        .then((r) => r.ok ? r.json() : r.json().then((d: { detail?: string }) => Promise.reject(d.detail ?? "Failed")))
+        .then((d: AnalyzeResponse) => { setAnalysis(d); return d; })
+        .catch((e: unknown) => { setAnalysisError(String(e)); return null as AnalyzeResponse | null; })
+        .finally(() => setAnalysisLoading(false));
+
+      // ── Save to DynamoDB + localStorage once BOTH complete ─────────────
+      Promise.all([analysisPromise, benchmarksPromise]).then(([analysisData, benchmarkData]) => {
+        if (!analysisData) return;
+
+        const savePayload = {
           audit_id:         auditId,
+          created_at:       new Date().toISOString(),
           brand_name:       brandName,
           niche,
           marketplace,
@@ -309,23 +499,85 @@ function AuditResultsContent() {
           brand_analysis:   analysisData.brand_analysis,
           recommendations:  analysisData.recommendations,
           benchmark_metrics: benchmarkData?.metrics ?? [],
-          csv_metadata:     parsedCsv
-            ? { filename: parsedCsv.filename, rows: parsedCsv.rows, columns: parsedCsv.columns }
+          csv_metadata:     csv
+            ? { filename: csv.filename, rows: csv.rows, columns: csv.columns, preview: csv.preview, raw_text: csv.raw_text }
             : {},
           citations:        analysisData.citations,
-        }),
-      }).then(async (r) => {
-        if (!r.ok) {
-          const body = await r.json().catch(() => ({}));
-          console.error("[save] failed", r.status, body);
-        } else {
-          console.log("[save] audit saved successfully");
-        }
-      }).catch((err) => console.error("[save] network error", err));
-    });
+          s3_key:           csv?.s3_key ?? "",
+        };
+
+        // Cache locally for instant loads next time
+        setCachedReport(auditId, savePayload);
+
+        console.log("[save] triggering save for audit", auditId);
+        fetchWithAuth("/api/audit/save", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(savePayload),
+        }).then(async (r) => {
+          if (!r.ok) {
+            const body = await r.json().catch(() => ({}));
+            console.error("[save] failed", r.status, body);
+          } else {
+            console.log("[save] audit saved successfully");
+          }
+        }).catch((err) => console.error("[save] network error", err));
+      });
+    }
 
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [auditId]);
+
+  // ── Progress tracking: find previous audit for same brand + report type ──
+  useEffect(() => {
+    if (!brandName || !reportType) return;
+    setProgressLoading(true);
+
+    // Try cached list first, then fall back to API
+    const tryList = (list: { audit_id: string; brand_name: string; report_type: string; created_at: string }[] | null) => {
+      if (!list) return null;
+      return list
+        .filter((a) => a.brand_name === brandName && a.report_type === reportType && a.audit_id !== auditId)
+        .sort((a, b) => b.created_at.localeCompare(a.created_at))[0] ?? null;
+    };
+
+    const cached = getCachedAuditList() as { audit_id: string; brand_name: string; report_type: string; created_at: string }[] | null;
+    const prev = tryList(cached);
+
+    const loadPrev = (prevId: string, createdAt?: string) => {
+      const cachedReport = getCachedReport(prevId);
+      if (cachedReport && cachedReport.csv_metadata) {
+        if (createdAt && !cachedReport.created_at) cachedReport.created_at = createdAt;
+        setPrevAudit(cachedReport);
+        setProgressLoading(false);
+        return;
+      }
+      fetchWithAuth(`/api/audit/${prevId}`)
+        .then((r) => r.ok ? r.json() : null)
+        .then((data) => {
+          if (data) {
+            if (createdAt && !data.created_at) data.created_at = createdAt;
+            setPrevAudit(data);
+          }
+        })
+        .catch(() => {})
+        .finally(() => setProgressLoading(false));
+    };
+
+    if (prev) {
+      loadPrev(prev.audit_id, prev.created_at);
+    } else {
+      // No cached list — fetch from API
+      fetchWithAuth("/api/audit/list")
+        .then((r) => r.ok ? r.json() : null)
+        .then((d: { audits?: { audit_id: string; brand_name: string; report_type: string; created_at: string }[] } | null) => {
+          const match = tryList(d?.audits ?? null);
+          if (match) loadPrev(match.audit_id, match.created_at);
+          else setProgressLoading(false);
+        })
+        .catch(() => setProgressLoading(false));
+    }
+  }, [auditId, brandName, reportType]);
 
   const reportColor = REPORT_COLORS[reportType] || "#f59e0b";
 
@@ -342,13 +594,136 @@ function AuditResultsContent() {
       {/* Print styles */}
       <style>{`
         @media print {
-          @page { size: A4; margin: 18mm; }
-          .no-print { display: none !important; }
-          body { background: white !important; color: black !important; }
-          .print-section { break-inside: avoid; }
-          header { display: none !important; }
+          @page { size: A4; margin: 0; }
+
+          /* Hide nav, show print-only branding */
+          .no-print, header { display: none !important; }
+          .print-only { display: block !important; }
+
+          /* Padding replaces @page margin — hides browser URL header/footer */
+          main { padding: 14mm 18mm 18mm 18mm !important; }
+
+          /* Force color printing */
+          * {
+            -webkit-print-color-adjust: exact !important;
+            print-color-adjust: exact !important;
+          }
+
+          /* White base */
+          html, body, .min-h-screen {
+            background: white !important;
+            color: #1e293b !important;
+          }
+
+          /* ── Text readability on white ── */
+          .text-slate-100, .text-slate-200, .text-slate-300 { color: #1e293b !important; }
+          .text-slate-400, .text-slate-500 { color: #64748b !important; }
+          .text-slate-600 { color: #94a3b8 !important; }
+
+          /* ── Cards: light gray bg, subtle border ── */
+          .rounded-2xl { background: #f8fafc !important; border-color: #e2e8f0 !important; }
+          .rounded-xl { background: #f8fafc !important; border-color: #e2e8f0 !important; }
+
+          /* ── Section number badges — keep original colors ── */
+          .bg-blue-500\\/20 { background: #dbeafe !important; }
+          .text-blue-400 { color: #3b82f6 !important; }
+          .border-blue-500\\/40 { border-color: #93c5fd !important; }
+
+          .bg-amber-500\\/20 { background: #fef3c7 !important; }
+          .text-amber-400 { color: #f59e0b !important; }
+          .border-amber-500\\/40 { border-color: #fcd34d !important; }
+
+          .bg-emerald-500\\/20 { background: #d1fae5 !important; }
+          .text-emerald-400 { color: #10b981 !important; }
+          .border-emerald-500\\/40 { border-color: #6ee7b7 !important; }
+
+          .bg-cyan-500\\/20 { background: #cffafe !important; }
+          .text-cyan-400 { color: #06b6d4 !important; }
+          .border-cyan-500\\/40 { border-color: #67e8f9 !important; }
+
+          /* ── Metadata tag badges ── */
+          .bg-slate-800 { background: #f1f5f9 !important; }
+          .border-slate-700 { border-color: #cbd5e1 !important; }
+
+          /* ── Top seller trait pills ── */
+          .bg-blue-500\\/10 { background: #eff6ff !important; }
+          .border-blue-500\\/30 { border-color: #93c5fd !important; }
+          .text-blue-300 { color: #2563eb !important; }
+
+          /* ── Priority badges — keep vivid colors ── */
+          .bg-red-500\\/20 { background: #fee2e2 !important; }
+          .text-red-300 { color: #dc2626 !important; }
+          .border-red-500\\/40 { border-color: #fca5a5 !important; }
+
+          .bg-amber-500\\/20 { background: #fef3c7 !important; }
+          .text-amber-300 { color: #d97706 !important; }
+          .border-amber-500\\/40 { border-color: #fcd34d !important; }
+
+          .bg-slate-700\\/60 { background: #e2e8f0 !important; }
+          .text-slate-300 { color: #334155 !important; }
+          .border-slate-600\\/40 { border-color: #cbd5e1 !important; }
+
+          /* ── Step number boxes (01, 02...) ── */
+          .bg-emerald-500\\/10 { background: #ecfdf5 !important; }
+          .border-emerald-500\\/30 { border-color: #6ee7b7 !important; }
+
+          /* ── Outcome line ── */
+          .text-emerald-400\\/80 { color: #059669 !important; }
+          .text-emerald-400 { color: #059669 !important; }
+
+          /* ── Source links ── */
+          .text-slate-500 a, a.text-slate-500 { color: #64748b !important; }
+
+          /* ── Bullet dots ── */
+          .bg-slate-600 { background: #94a3b8 !important; }
+
+          /* ── Benchmark metric cards ── */
+          .bg-slate-800\\/50 { background: #f1f5f9 !important; }
+          .border-slate-700\\/40 { border-color: #e2e8f0 !important; }
+
+          /* ── Chart readable on white ── */
+          .recharts-cartesian-axis-tick-value { fill: #475569 !important; }
+          .recharts-legend-item-text { color: #475569 !important; }
+
+          /* ── Page break rules ── */
+          section, .rounded-2xl, .benchmark-print-group {
+            break-inside: auto !important;
+            page-break-inside: auto !important;
+          }
+          .rec-card, .grid > div {
+            break-inside: avoid;
+            page-break-inside: avoid;
+          }
+          section > h3 { break-after: avoid; page-break-after: avoid; }
+
+          /* Timeline line hidden */
+          .timeline-line { display: none !important; }
+
+          /* ── Spacing ── */
+          .space-y-8 > * + * { margin-top: 1.25rem !important; }
+          .space-y-5 > * + * { margin-top: 0.75rem !important; }
+          .pb-8 { padding-bottom: 0.5rem !important; }
+
+          /* ── Progress tracking colors ── */
+          .bg-blue-500\\/20 { background: #dbeafe !important; }
+          .text-blue-300 { color: #2563eb !important; }
+          .border-blue-500\\/30 { border-color: #93c5fd !important; }
         }
       `}</style>
+
+      {/* Print-only header — replaces browser URL */}
+      <div className="print-only hidden mb-6">
+        <div className="flex items-center justify-between border-b border-slate-300 pb-4">
+          <div>
+            <h1 className="text-xl font-bold text-slate-900">Amazon Audit Report</h1>
+            <p className="text-sm text-slate-500 mt-1">{brandName} — {niche || "General"} · {marketplace}</p>
+          </div>
+          <div className="text-right">
+            <p className="text-xs text-slate-500">Generated by</p>
+            <p className="text-sm font-semibold text-slate-700">Amazon Audit by Khan Business Consulting Company</p>
+          </div>
+        </div>
+      </div>
 
       {/* Header */}
       <header className="border-b border-slate-800 bg-slate-900/50 backdrop-blur sticky top-0 z-10 no-print">
@@ -358,7 +733,11 @@ function AuditResultsContent() {
               <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
               </svg>
-              New Audit
+              Dashboard
+            </Link>
+            <span className="text-slate-700">/</span>
+            <Link href="/audits" className="text-sm text-slate-400 hover:text-amber-400 transition-colors">
+              All Audits
             </Link>
             <span className="text-slate-700">/</span>
             <span className="text-sm font-medium text-slate-200 truncate max-w-[200px]">{brandName || "Audit"}</span>
@@ -366,7 +745,12 @@ function AuditResultsContent() {
           <div className="flex items-center gap-2">
             <ShareButton auditId={auditId} disabled={analysisLoading} />
             <button
-              onClick={() => window.print()}
+              onClick={() => {
+                const orig = document.title;
+                document.title = `${brandName} — Amazon Audit Report`;
+                window.print();
+                document.title = orig;
+              }}
               disabled={analysisLoading}
               className="flex items-center gap-1.5 rounded-lg border border-slate-700 bg-slate-800 px-3 py-1.5 text-xs font-medium text-slate-300 hover:border-slate-600 hover:text-white transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
             >
@@ -411,6 +795,24 @@ function AuditResultsContent() {
                       const blob = new Blob([bytes], { type: csvData.file_mime || "application/octet-stream" });
                       const url = URL.createObjectURL(blob);
                       window.open(url, "_blank");
+                    }}
+                    className="text-sm text-amber-400 hover:text-amber-300 font-medium underline underline-offset-2 transition-colors"
+                  >
+                    {csvData.filename}
+                  </button>
+                ) : csvData.s3_key ? (
+                  <button
+                    onClick={() => {
+                      fetchWithAuth(`/api/upload/file?s3_key=${encodeURIComponent(csvData.s3_key!)}`)
+                        .then((r) => r.ok ? r.json() : null)
+                        .then((file) => {
+                          if (!file?.file_data) return;
+                          const binary = atob(file.file_data);
+                          const bytes = new Uint8Array(binary.length);
+                          for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+                          const blob = new Blob([bytes], { type: file.content_type || "application/octet-stream" });
+                          window.open(URL.createObjectURL(blob), "_blank");
+                        });
                     }}
                     className="text-sm text-amber-400 hover:text-amber-300 font-medium underline underline-offset-2 transition-colors"
                   >
@@ -523,7 +925,7 @@ function AuditResultsContent() {
           {benchmarksLoading && <LoadingCard label="Fetching live industry benchmarks..." />}
           {benchmarksError && !benchmarksLoading && <ErrorCard message={benchmarksError} />}
           {benchmarks && !benchmarksLoading && (
-            <div className="rounded-2xl border border-slate-800 bg-slate-900/50 p-6 space-y-5">
+            <div className="rounded-2xl border border-slate-800 bg-slate-900/50 p-6 space-y-5 benchmark-print-group">
               <div className="flex items-center justify-between">
                 <p className="text-sm text-slate-400">Real-time Amazon seller industry averages</p>
                 {hasYourData && <span className="text-xs text-emerald-400 font-medium">Your data included</span>}
@@ -593,37 +995,200 @@ function AuditResultsContent() {
 
         {/* ── Section 3: Recommendations ── */}
         <section>
-          <h3 className="text-lg font-semibold text-slate-100 mb-4 flex items-center gap-2">
+          <h3 className="text-lg font-semibold text-slate-100 mb-6 flex items-center gap-2">
             <span className="w-6 h-6 rounded-full bg-emerald-500/20 border border-emerald-500/40 flex items-center justify-center text-xs text-emerald-400 font-bold">3</span>
             Improvement Recommendations
           </h3>
           {analysisLoading && <LoadingCard label="Generating tailored recommendations..." />}
           {analysisError && !analysisLoading && <ErrorCard message={analysisError} />}
           {analysis && !analysisLoading && (
-            <div className="space-y-3">
+            <div className="relative space-y-0">
+              {/* Vertical timeline line */}
+              <div className="absolute left-[23px] top-8 bottom-8 w-px bg-gradient-to-b from-emerald-500/40 via-slate-700/60 to-transparent timeline-line" />
+
               {[...analysis.recommendations]
                 .sort((a, b) => ({ high: 0, medium: 1, low: 2 }[a.priority] ?? 1) - ({ high: 0, medium: 1, low: 2 }[b.priority] ?? 1))
-                .map((rec, i) => (
-                  <div key={i} className="rounded-xl border border-slate-800 bg-slate-900/50 px-5 py-4 flex gap-4">
-                    <div className="shrink-0 w-8 h-8 rounded-lg bg-emerald-500/10 border border-emerald-500/30 flex items-center justify-center text-sm font-bold text-emerald-400">
-                      {i + 1}
-                    </div>
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-center gap-2 flex-wrap">
-                        <p className="text-sm font-semibold text-slate-100">{rec.title}</p>
-                        <span className={`px-2 py-0.5 rounded-full text-xs font-medium border ${PRIORITY_STYLES[rec.priority] ?? PRIORITY_STYLES.medium}`}>
-                          {rec.priority}
-                        </span>
+                .map((rec, i) => {
+                  // Split description into sentences for bullet points
+                  const sentences = rec.description
+                    .split(/(?<=[.!?])\s+/)
+                    .map((s) => s.trim())
+                    .filter((s) => s.length > 0);
+
+                  return (
+                    <div key={i} className="relative pl-16 pb-8 last:pb-0 group rec-card">
+                      {/* Step number */}
+                      <div className="absolute left-0 top-0 w-12 h-12 rounded-xl bg-emerald-500/10 border border-emerald-500/30 flex items-center justify-center text-lg font-bold text-emerald-400 group-hover:bg-emerald-500/20 group-hover:border-emerald-500/50 transition-colors z-10">
+                        {String(i + 1).padStart(2, "0")}
                       </div>
-                      <p className="text-sm text-slate-400 mt-1 leading-relaxed">{rec.description}</p>
+
+                      {/* Card */}
+                      <div className="rounded-xl border border-slate-800 bg-slate-900/50 p-5 hover:border-slate-700 transition-colors">
+                        {/* Title row */}
+                        <div className="flex items-center gap-3 flex-wrap mb-3">
+                          <h4 className="text-base font-semibold text-slate-100">{rec.title}</h4>
+                          <span className={`px-2.5 py-0.5 rounded-full text-xs font-semibold uppercase tracking-wide border ${PRIORITY_STYLES[rec.priority] ?? PRIORITY_STYLES.medium}`}>
+                            {rec.priority}
+                          </span>
+                        </div>
+
+                        {/* Bullet points */}
+                        <ul className="space-y-2 mb-4">
+                          {sentences.map((sentence, si) => (
+                            <li key={si} className="flex items-start gap-2.5 text-sm text-slate-400 leading-relaxed">
+                              <span className="mt-1.5 w-1.5 h-1.5 rounded-full bg-slate-600 shrink-0" />
+                              {sentence}
+                            </li>
+                          ))}
+                        </ul>
+
+                        {/* Outcome line */}
+                        <div className="pt-3 border-t border-slate-800/60">
+                          <p className="text-xs text-slate-500">
+                            <span className="font-semibold text-emerald-400/80">Outcome:</span>{" "}
+                            {rec.priority === "high"
+                              ? "High-impact improvement driving measurable results."
+                              : rec.priority === "medium"
+                                ? "Meaningful optimization contributing to sustained growth."
+                                : "Incremental refinement supporting long-term performance."}
+                          </p>
+                        </div>
+                      </div>
                     </div>
-                  </div>
-                ))}
+                  );
+                })}
             </div>
           )}
         </section>
 
+        {/* ── Section 4: Progress Tracking ── */}
+        {(() => {
+          if (progressLoading) {
+            return (
+              <section>
+                <h3 className="text-lg font-semibold text-slate-100 mb-4 flex items-center gap-2">
+                  <span className="w-6 h-6 rounded-full bg-cyan-500/20 border border-cyan-500/40 flex items-center justify-center text-xs text-cyan-400 font-bold">4</span>
+                  Progress Tracking
+                </h3>
+                <LoadingCard label="Looking for previous audits to compare..." />
+              </section>
+            );
+          }
+
+          // Need previous audit + benchmarks; works with CSV, PDF, or Word data
+          const prevCsv = prevAudit?.csv_metadata as { columns?: string[]; preview?: Record<string, string>[]; raw_text?: string } | undefined;
+          const currentData = { preview: csvData?.preview, columns: csvData?.columns, raw_text: csvData?.raw_text };
+          const prevData = { preview: prevCsv?.preview, columns: prevCsv?.columns, raw_text: (prevAudit?.raw_text ?? prevCsv?.raw_text) as string | undefined };
+
+          // Need at least some data on both sides + benchmark metrics to compare against
+          const hasCurrentData = (currentData.preview?.length && currentData.columns?.length) || currentData.raw_text;
+          const hasPrevData = (prevData.preview?.length && prevData.columns?.length) || prevData.raw_text;
+          if (!prevAudit || !hasCurrentData || !hasPrevData || !benchmarks?.metrics?.length) return null;
+
+          const prevDate = prevAudit.created_at
+            ? new Date(prevAudit.created_at as string).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })
+            : "Previous";
+
+          // Build comparison data for each metric
+          const comparisons = benchmarks.metrics.map((m) => {
+            const current = extractMetric(m.key, currentData);
+            const previous = extractMetric(m.key, prevData);
+            if (current === null && previous === null) return null;
+
+            const delta = current !== null && previous !== null ? current - previous : null;
+            const pctChange = delta !== null && previous !== null && previous !== 0 ? Math.round((delta / Math.abs(previous)) * 100) : null;
+            const isNeutral = delta === 0;
+            const isImproved = delta !== null && !isNeutral ? (m.lower_is_better ? delta < 0 : delta > 0) : null;
+
+            return { key: m.key, label: m.label, unit: m.unit, current, previous, delta, pctChange, isImproved, isNeutral, isNew: previous === null };
+          }).filter(Boolean) as { key: string; label: string; unit: string; current: number | null; previous: number | null; delta: number | null; pctChange: number | null; isImproved: boolean | null; isNeutral: boolean; isNew: boolean }[];
+
+          if (comparisons.length === 0) return null;
+
+          const improved = comparisons.filter((c) => c.isImproved === true).length;
+          const unchanged = comparisons.filter((c) => c.isNeutral).length;
+          const comparable = comparisons.filter((c) => c.delta !== null).length;
+
+          return (
+            <section className="print-section">
+              <h3 className="text-lg font-semibold text-slate-100 mb-4 flex items-center gap-2">
+                <span className="w-6 h-6 rounded-full bg-cyan-500/20 border border-cyan-500/40 flex items-center justify-center text-xs text-cyan-400 font-bold">4</span>
+                Progress Tracking
+              </h3>
+
+              <div className="rounded-2xl border border-slate-800 bg-slate-900/50 p-6 space-y-5">
+                {/* Summary bar */}
+                <div className="flex items-center justify-between flex-wrap gap-3">
+                  <div>
+                    <p className="text-sm text-slate-400">
+                      Comparing with audit from <span className="text-slate-200 font-medium">{prevDate}</span>
+                    </p>
+                  </div>
+                  {comparable > 0 && (
+                    <div className="flex items-center gap-3">
+                      <span className="text-sm font-semibold text-slate-200">
+                        {improved}/{comparable} improved{unchanged > 0 ? ` · ${unchanged} unchanged` : ""}
+                      </span>
+                      <div className="w-24 h-2 rounded-full bg-slate-800 overflow-hidden">
+                        <div
+                          className="h-full rounded-full transition-all"
+                          style={{
+                            width: `${((improved + unchanged) / comparable) * 100}%`,
+                            backgroundColor: unchanged === comparable ? "#94a3b8" : improved / (comparable - unchanged || 1) >= 0.5 ? "#34d399" : "#f87171",
+                          }}
+                        />
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                {/* Metric comparison cards */}
+                <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+                  {comparisons.map((c) => (
+                    <div key={c.key} className="rounded-xl bg-slate-800/50 border border-slate-700/40 p-3 space-y-2">
+                      <p className="text-xs text-slate-500 font-medium truncate">{c.label}</p>
+
+                      {c.isNew ? (
+                        <>
+                          <p className="text-lg font-bold text-slate-200">
+                            {c.current}{c.unit}
+                          </p>
+                          <span className="inline-block px-2 py-0.5 rounded-full text-[10px] font-semibold bg-blue-500/20 text-blue-300 border border-blue-500/30">
+                            NEW
+                          </span>
+                        </>
+                      ) : (
+                        <>
+                          <div className="flex items-baseline gap-1.5">
+                            <span className="text-xs text-slate-600">{c.previous}{c.unit}</span>
+                            <svg className="w-3 h-3 text-slate-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M14 5l7 7m0 0l-7 7m7-7H3" />
+                            </svg>
+                            <span className="text-lg font-bold text-slate-200">{c.current}{c.unit}</span>
+                          </div>
+                          {c.pctChange !== null && (
+                            <p className={`text-xs font-semibold ${c.isNeutral ? "text-slate-400" : c.isImproved ? "text-emerald-400" : "text-red-400"}`}>
+                              {c.isNeutral ? "=" : c.isImproved ? "▲" : "▼"} {c.pctChange > 0 ? "+" : ""}{c.pctChange}% change
+                            </p>
+                          )}
+                        </>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </section>
+          );
+        })()}
+
       </main>
+
+      {/* Print-only footer */}
+      <div className="print-only hidden mt-8 pt-4 border-t border-slate-300 text-center">
+        <p className="text-xs text-slate-500">
+          Generated by <span className="font-semibold">Amazon Audit by Khan Business Consulting Company</span>
+        </p>
+      </div>
     </div>
   );
 }

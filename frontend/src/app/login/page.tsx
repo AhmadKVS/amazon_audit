@@ -3,7 +3,8 @@
 import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
-import { saveTokens, isAuthenticated } from "@/lib/auth";
+import { saveTokens, isAuthenticated, fetchWithAuth } from "@/lib/auth";
+import { setCachedAuditList, setCachedReport } from "@/lib/cache";
 
 export default function LoginPage() {
   const router = useRouter();
@@ -36,6 +37,23 @@ export default function LoginPage() {
         return;
       }
       saveTokens(data);
+      // Pre-fetch audit list + all individual reports in background
+      fetchWithAuth("/api/audit/list")
+        .then((r) => r.ok ? r.json() : null)
+        .then((d) => {
+          if (!d?.audits) return;
+          setCachedAuditList(d.audits);
+          // Fetch and cache each audit report
+          for (const audit of d.audits) {
+            fetchWithAuth(`/api/audit/${audit.audit_id}`)
+              .then((r) => r.ok ? r.json() : null)
+              .then((report) => {
+                if (report?.brand_analysis) setCachedReport(audit.audit_id, report);
+              })
+              .catch(() => {});
+          }
+        })
+        .catch(() => {});
       router.replace("/");
     } catch {
       setError("Could not connect to the server. Please try again.");

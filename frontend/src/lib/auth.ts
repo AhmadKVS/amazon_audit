@@ -86,7 +86,7 @@ export async function fetchWithAuth(url: string, init: RequestInit = {}): Promis
   });
 }
 
-/** Sign out: revoke server-side + clear local tokens */
+/** Sign out: revoke server-side + clear local tokens + clear audit cache */
 export async function signOut() {
   const token = getAccessToken();
   if (token) {
@@ -99,4 +99,6 @@ export async function signOut() {
     }
   }
   clearTokens();
+  // Lazy-import to avoid circular dependency
+  import("./cache").then(({ clearAuditCache }) => clearAuditCache()).catch(() => {});
 }

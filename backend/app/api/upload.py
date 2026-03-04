@@ -2,12 +2,14 @@
 File Upload & Parser — CSV, Excel, Word, PDF
 Supports Amazon Seller Central exports and client-provided documents.
 """
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+import base64
+
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 
 from app.services.csv_parser import (
     parse_csv, parse_excel, parse_docx, parse_pdf, detect_report_type,
 )
-from app.services.s3_storage import upload_to_s3
+from app.services.s3_storage import upload_to_s3, download_from_s3
 from app.core.dependencies import get_current_user
 
 router = APIRouter()
@@ -145,4 +147,28 @@ async def preview_file(file: UploadFile = File(...), user: str = Depends(get_cur
         "columns":     [],
         "preview":     [],
         "raw_text":    raw_text[:1000],
+    }
+
+
+@router.get("/file")
+async def get_file(s3_key: str = Query(...), user: str = Depends(get_current_user)):
+    """Download a previously uploaded file from S3 as base64."""
+    # Basic path traversal guard: key must start with "uploads/"
+    if not s3_key.startswith("uploads/"):
+        raise HTTPException(400, "Invalid S3 key")
+
+    result = await download_from_s3(s3_key)
+    if not result:
+        raise HTTPException(404, "File not found")
+
+    contents, content_type = result
+    filename = s3_key.rsplit("/", 1)[-1]
+    # Strip timestamp prefix (YYYYMMDD_HHMMSS_)
+    if len(filename) > 16 and filename[15] == "_":
+        filename = filename[16:]
+
+    return {
+        "filename":     filename,
+        "content_type": content_type,
+        "file_data":    base64.b64encode(contents).decode("ascii"),
     }
