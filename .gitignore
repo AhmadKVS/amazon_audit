@@ -32,3 +32,20 @@ Thumbs.db
 # IDE
 .vscode/
 .idea/
+
+#Claude
+.claude/
+claude.md
+
+@Amplify
+amplify/
+amplify.yml
+amplify.config.json
+amplify.config.json.bak
+amplify.config.json.bak.bak
+amplify.config.json.bak.bak.bak
+amplify.config.json.bak.bak.bak.bak
+amplify.config.json.bak.bak.bak.bak.bak
+amplify.config.json.bak.bak.bak.bak.bak.bak
+amplify.config.json.bak.bak.bak.bak.bak.bak.bak
+amplify.config.json.bak.bak.bak.bak.bak.bak.bak.bak

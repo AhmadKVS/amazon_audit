@@ -83,6 +83,7 @@ export async function fetchWithAuth(url: string, init: RequestInit = {}): Promis
       ...(init.headers ?? {}),
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
     },
+    signal: init.signal ?? AbortSignal.timeout(120_000), // 120s default timeout
   });
 }
 

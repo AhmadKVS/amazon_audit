@@ -95,12 +95,31 @@ def save_audit(user_id: str, audit_id: str, data: dict) -> None:
         "csv_metadata":     data.get("csv_metadata", {}),
         "citations":        data.get("citations", []),
         "s3_key":           data.get("s3_key", ""),
+        "deep_analysis":    data.get("deep_analysis", {}),
     })
     try:
         table.put_item(Item=item)
         print(f"[dynamo] save_audit SUCCESS")
     except Exception as e:
         print(f"[dynamo] save_audit FAILED: {e}")
+        raise
+
+
+def update_audit_field(user_id: str, audit_id: str, field: str, value) -> None:
+    """Update a single field on an existing audit record."""
+    print(f"[dynamo] update_audit_field user_id={user_id!r} audit_id={audit_id!r} field={field!r}")
+    table = _resource().Table(settings.DYNAMODB_TABLE)
+    sanitized = _sanitize({"v": value})["v"] if value else value
+    try:
+        table.update_item(
+            Key={"user_id": user_id, "audit_id": audit_id},
+            UpdateExpression=f"SET #f = :v",
+            ExpressionAttributeNames={"#f": field},
+            ExpressionAttributeValues={":v": sanitized},
+        )
+        print(f"[dynamo] update_audit_field SUCCESS")
+    except Exception as e:
+        print(f"[dynamo] update_audit_field FAILED: {e}")
         raise
 
 
@@ -122,6 +141,28 @@ def get_audit(user_id: str, audit_id: str) -> dict | None:
     if not item:
         return None
     return _to_native(item)
+
+
+def batch_get_audits(user_id: str, audit_ids: list[str]) -> list[dict]:
+    """Fetch multiple full audit records in batches of 100 (DynamoDB limit)."""
+    if not audit_ids:
+        return []
+    resource = _resource()
+    table_name = settings.DYNAMODB_TABLE
+    results = []
+    # DynamoDB batch_get_item accepts max 100 keys per call
+    for i in range(0, len(audit_ids), 100):
+        chunk = audit_ids[i : i + 100]
+        keys = [{"user_id": user_id, "audit_id": aid} for aid in chunk]
+        resp = resource.batch_get_item(RequestItems={table_name: {"Keys": keys}})
+        items = resp.get("Responses", {}).get(table_name, [])
+        # Handle unprocessed keys (throttling)
+        unprocessed = resp.get("UnprocessedKeys", {}).get(table_name, {}).get("Keys", [])
+        if unprocessed:
+            retry_resp = resource.batch_get_item(RequestItems={table_name: {"Keys": unprocessed}})
+            items.extend(retry_resp.get("Responses", {}).get(table_name, []))
+        results.extend(items)
+    return [_to_native(item) for item in results]
 
 
 def delete_audit(user_id: str, audit_id: str) -> None:

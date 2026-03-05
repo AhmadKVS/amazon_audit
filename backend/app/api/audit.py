@@ -16,7 +16,7 @@ from pydantic import BaseModel
 
 from app.core.config import settings
 from app.core.dependencies import get_current_user
-from app.services.dynamo import save_audit as dynamo_save, list_audits as dynamo_list, get_audit as dynamo_get, delete_audit as dynamo_delete
+from app.services.dynamo import save_audit as dynamo_save, list_audits as dynamo_list, get_audit as dynamo_get, delete_audit as dynamo_delete, batch_get_audits as dynamo_batch_get, update_audit_field as dynamo_update_field
 
 router = APIRouter()
 
@@ -160,6 +160,7 @@ async def _synthesize(client: httpx.AsyncClient, research_context: str, req: Ana
         "   ]"
     )
 
+    print(f"[audit] Calling Perplexity chat completions (sonar-pro) with {len(research_context)} chars context")
     resp = await client.post(
         PERPLEXITY_CHAT_URL,
         headers=_auth_headers(),
@@ -217,8 +218,16 @@ async def _synthesize(client: httpx.AsyncClient, research_context: str, req: Ana
             ],
         },
     )
+    print(f"[audit] Perplexity response status: {resp.status_code}")
     resp.raise_for_status()
-    content = resp.json()["choices"][0]["message"]["content"]
+    resp_json = resp.json()
+    try:
+        content = resp_json["choices"][0]["message"]["content"]
+    except (KeyError, IndexError) as e:
+        print(f"[audit] Unexpected Perplexity response structure: {e}")
+        print(f"[audit] Response keys: {list(resp_json.keys()) if isinstance(resp_json, dict) else type(resp_json)}")
+        raise ValueError(f"Unexpected Perplexity response: {str(resp_json)[:300]}")
+    print(f"[audit] Perplexity content (first 200 chars): {content[:200]}")
     return json.loads(_extract_json(content))
 
 
@@ -252,12 +261,18 @@ async def analyze(req: AnalyzeRequest, user: str = Depends(get_current_user)):
     ]
 
     try:
-        async with httpx.AsyncClient(timeout=60.0) as client:
+        async with httpx.AsyncClient(timeout=120.0) as client:
 
             try:
+                print(f"[audit] Step 1: Calling Perplexity multi-search with {len(queries)} queries")
                 grouped = await _multi_search(client, queries, max_results=5)
-            except httpx.HTTPStatusError:
+                print(f"[audit] Step 1: Search returned {sum(len(g) for g in grouped)} total results")
+            except httpx.HTTPStatusError as search_err:
                 # Search API unavailable on this plan — proceed with empty context
+                print(f"[audit] Step 1: Search API failed ({search_err.response.status_code}) — continuing with empty context")
+                grouped = [[] for _ in queries]
+            except Exception as search_err:
+                print(f"[audit] Step 1: Search API error ({type(search_err).__name__}: {search_err}) — continuing with empty context")
                 grouped = [[] for _ in queries]
 
             # Collect URLs and build context text from all result groups
@@ -290,6 +305,9 @@ async def analyze(req: AnalyzeRequest, user: str = Depends(get_current_user)):
         raise HTTPException(502, f"Perplexity API error {e.response.status_code}: {detail}")
     except json.JSONDecodeError:
         raise HTTPException(500, "Could not parse AI synthesis response — try again")
+    except Exception as e:
+        print(f"[audit] Unexpected error: {type(e).__name__}: {e}")
+        raise HTTPException(500, f"Audit analysis failed: {type(e).__name__}: {e}")
 
     brand_analysis  = synthesis.get("brand_analysis", {})
     recommendations = synthesis.get("recommendations", [])
@@ -340,6 +358,7 @@ class SaveAuditRequest(BaseModel):
     csv_metadata:     dict = {}
     citations:        list = []
     s3_key:           str  = ""
+    deep_analysis:    dict = {}
 
 
 @router.post("/save")
@@ -390,6 +409,41 @@ async def debug_users(user: str = Depends(get_current_user)):
             for item in items
         ],
     }
+
+
+# ── Batch fetch full audits ────────────────────────────────────────────────
+
+class BatchRequest(BaseModel):
+    audit_ids: list[str]
+
+
+@router.post("/batch")
+async def batch_audits(req: BatchRequest, user: str = Depends(get_current_user)):
+    """Return full audit records for a list of audit_ids in one call."""
+    if len(req.audit_ids) > 200:
+        raise HTTPException(400, "Too many audit_ids (max 200)")
+    try:
+        items = dynamo_batch_get(user, req.audit_ids)
+    except Exception as e:
+        raise HTTPException(500, f"Batch fetch failed: {e}")
+    return {"audits": items}
+
+
+# ── Update deep analysis on existing audit ────────────────────────────────
+
+class UpdateDeepAnalysisRequest(BaseModel):
+    audit_id: str
+    deep_analysis: dict
+
+
+@router.post("/update-deep-analysis")
+async def update_deep_analysis(req: UpdateDeepAnalysisRequest, user: str = Depends(get_current_user)):
+    """Update just the deep_analysis field on an existing audit (no overwrite)."""
+    try:
+        dynamo_update_field(user, req.audit_id, "deep_analysis", req.deep_analysis)
+    except Exception as e:
+        raise HTTPException(500, f"Failed to update deep analysis: {e}")
+    return {"updated": True}
 
 
 # ── Delete single audit (MUST be before /{audit_id} GET) ──────────────────

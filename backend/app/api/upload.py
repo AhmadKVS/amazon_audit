@@ -3,14 +3,18 @@ File Upload & Parser — CSV, Excel, Word, PDF
 Supports Amazon Seller Central exports and client-provided documents.
 """
 import base64
+import json
+from datetime import datetime
+from typing import List, Optional
 
-from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
 
 from app.services.csv_parser import (
     parse_csv, parse_excel, parse_docx, parse_pdf, detect_report_type,
 )
 from app.services.s3_storage import upload_to_s3, download_from_s3
 from app.core.dependencies import get_current_user
+from app.core.config import settings
 
 router = APIRouter()
 
@@ -23,6 +27,9 @@ CONTENT_TYPES = {
     ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     ".pdf":  "application/pdf",
 }
+
+# Maximum file size: 50 MB
+MAX_FILE_SIZE = 50 * 1024 * 1024
 
 
 def _ext(filename: str) -> str:
@@ -171,4 +178,189 @@ async def get_file(s3_key: str = Query(...), user: str = Depends(get_current_use
         "filename":     filename,
         "content_type": content_type,
         "file_data":    base64.b64encode(contents).decode("ascii"),
+    }
+
+
+async def _process_single_file(
+    file: UploadFile,
+    slot_label: str,
+    session_id: str,
+) -> dict:
+    """
+    Parse and optionally upload a single uploaded file.
+    Returns a dict with parsed metadata for inclusion in the /multi response.
+    """
+    if not file.filename:
+        raise ValueError("No filename provided")
+
+    ext = _ext(file.filename)
+    if ext not in ACCEPTED_EXTENSIONS:
+        raise ValueError(
+            f"Unsupported file type '{ext}'. Accepted: CSV, Excel (.xlsx/.xls), Word (.docx), PDF"
+        )
+
+    contents = await file.read()
+
+    if len(contents) > MAX_FILE_SIZE:
+        raise ValueError(
+            f"File '{file.filename}' exceeds the 50 MB size limit "
+            f"({len(contents) // (1024 * 1024)} MB uploaded)"
+        )
+
+    timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+    s3_path = f"uploads/sessions/{session_id}/{slot_label}/{timestamp}_{file.filename}"
+
+    # ── Tabular formats (CSV / Excel) ─────────────────────────────────────
+    if ext in (".csv", ".xlsx", ".xls"):
+        df = parse_csv(contents) if ext == ".csv" else parse_excel(contents)
+        report_type = detect_report_type(df)
+        preview = df.head(20).fillna("").astype(str).to_dict(orient="records")
+
+        s3_key: Optional[str] = None
+        if settings.S3_BUCKET and settings.AWS_ACCESS_KEY_ID and settings.AWS_SECRET_ACCESS_KEY:
+            import boto3
+            try:
+                s3 = boto3.client(
+                    "s3",
+                    region_name=settings.AWS_REGION,
+                    aws_access_key_id=settings.AWS_ACCESS_KEY_ID,
+                    aws_secret_access_key=settings.AWS_SECRET_ACCESS_KEY,
+                )
+                s3.put_object(
+                    Bucket=settings.S3_BUCKET,
+                    Key=s3_path,
+                    Body=contents,
+                    ContentType=CONTENT_TYPES[ext],
+                )
+                s3_key = s3_path
+            except Exception as e:
+                print(f"[s3] Multi-upload failed for {file.filename}: {e}")
+
+        return {
+            "filename":    file.filename,
+            "file_type":   ext.lstrip("."),
+            "report_type": report_type,
+            "slot_label":  slot_label,
+            "rows":        len(df),
+            "columns":     list(df.columns),
+            "preview":     preview,
+            "s3_key":      s3_key,
+        }
+
+    # ── Document formats (Word / PDF) ─────────────────────────────────────
+    if ext == ".docx":
+        raw_text = parse_docx(contents)
+        df_from_doc = None
+    else:  # .pdf
+        df_from_doc, raw_text = parse_pdf(contents)
+
+    s3_key = None
+    if settings.S3_BUCKET and settings.AWS_ACCESS_KEY_ID and settings.AWS_SECRET_ACCESS_KEY:
+        import boto3
+        try:
+            s3 = boto3.client(
+                "s3",
+                region_name=settings.AWS_REGION,
+                aws_access_key_id=settings.AWS_ACCESS_KEY_ID,
+                aws_secret_access_key=settings.AWS_SECRET_ACCESS_KEY,
+            )
+            s3.put_object(
+                Bucket=settings.S3_BUCKET,
+                Key=s3_path,
+                Body=contents,
+                ContentType=CONTENT_TYPES[ext],
+            )
+            s3_key = s3_path
+        except Exception as e:
+            print(f"[s3] Multi-upload failed for {file.filename}: {e}")
+
+    if df_from_doc is not None and not df_from_doc.empty:
+        report_type = detect_report_type(df_from_doc)
+        preview = df_from_doc.head(20).fillna("").astype(str).to_dict(orient="records")
+        return {
+            "filename":    file.filename,
+            "file_type":   ext.lstrip("."),
+            "report_type": report_type,
+            "slot_label":  slot_label,
+            "rows":        len(df_from_doc),
+            "columns":     list(df_from_doc.columns),
+            "preview":     preview,
+            "raw_text":    raw_text[:2000],
+            "s3_key":      s3_key,
+        }
+
+    return {
+        "filename":    file.filename,
+        "file_type":   ext.lstrip("."),
+        "report_type": "document",
+        "slot_label":  slot_label,
+        "rows":        0,
+        "columns":     [],
+        "preview":     [],
+        "raw_text":    raw_text[:4000],
+        "s3_key":      s3_key,
+    }
+
+
+@router.post("/multi")
+async def upload_multi(
+    files: List[UploadFile] = File(...),
+    session_id: str = Form(...),
+    slot_labels: str = Form(""),
+    user: str = Depends(get_current_user),
+):
+    """
+    Multi-file upload endpoint.
+
+    Accepts a list of files alongside a session_id (UUID) and an optional
+    JSON-encoded slot_labels list whose order matches the files list.
+
+    Slot labels identify the report type slot each file belongs to:
+      business_report | search_terms | query_performance | additional
+
+    Returns:
+      { success, session_id, files: [{ filename, file_type, report_type,
+        slot_label, rows, columns, preview, s3_key }] }
+    """
+    if not files:
+        raise HTTPException(400, "No files provided")
+
+    # Validate session_id — must be a UUID-like string (alphanumeric + hyphens)
+    import re
+    if not re.match(r'^[0-9a-f\-]{8,36}$', session_id, re.IGNORECASE):
+        raise HTTPException(400, "Invalid session_id format")
+
+    # Parse slot_labels JSON
+    labels: List[str] = []
+    if slot_labels:
+        try:
+            parsed = json.loads(slot_labels)
+            if isinstance(parsed, list):
+                labels = [str(l) for l in parsed]
+        except (json.JSONDecodeError, TypeError):
+            pass  # treat as empty — fall back to index-based labels
+
+    results = []
+    errors = []
+
+    for i, upload_file in enumerate(files):
+        slot_label = labels[i] if i < len(labels) else f"slot_{i}"
+
+        try:
+            file_result = await _process_single_file(upload_file, slot_label, session_id)
+            results.append(file_result)
+        except ValueError as e:
+            errors.append({"slot_label": slot_label, "filename": upload_file.filename, "error": str(e)})
+        except Exception as e:
+            errors.append({"slot_label": slot_label, "filename": upload_file.filename, "error": f"Processing failed: {str(e)}"})
+
+    if not results and errors:
+        # All files failed
+        raise HTTPException(400, f"All files failed to process: {errors[0]['error']}")
+
+    return {
+        "success":    True,
+        "session_id": session_id,
+        "files":      results,
+        "errors":     errors,  # partial failures — client can handle
     }

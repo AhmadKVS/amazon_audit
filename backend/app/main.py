@@ -6,7 +6,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api import upload, auth, health, benchmarks, audit, share, business_report
+from app.api import upload, auth, health, benchmarks, audit, share, business_report, analyze
 from app.core.config import settings
 
 
@@ -43,6 +43,7 @@ app.include_router(benchmarks.router, prefix="/api/benchmarks", tags=["Benchmark
 app.include_router(audit.router, prefix="/api/audit", tags=["Audit"])
 app.include_router(share.router, prefix="/api", tags=["Share"])
 app.include_router(business_report.router, prefix="/api/business-report", tags=["Business Report"])
+app.include_router(analyze.router, prefix="/api/analyze", tags=["Analyze"])
 
 
 def handler(event, context):

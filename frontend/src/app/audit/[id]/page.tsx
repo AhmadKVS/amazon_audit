@@ -8,6 +8,7 @@ import {
 } from "recharts";
 import { fetchWithAuth, isAuthenticated } from "@/lib/auth";
 import { getCachedReport, setCachedReport, getCachedAuditList } from "@/lib/cache";
+import { AuditResults, AnalysisLoading, GatedCta, type AnalysisResult } from "@/components/AuditResults";
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -330,6 +331,11 @@ function AuditResultsContent() {
   const [prevAudit, setPrevAudit] = useState<Record<string, any> | null>(null);
   const [progressLoading, setProgressLoading] = useState(false);
 
+  // AI deep analysis (Claude-powered)
+  const [deepAnalysis, setDeepAnalysis] = useState<AnalysisResult | null>(null);
+  const [deepAnalysisLoading, setDeepAnalysisLoading] = useState(false);
+  const [deepAnalysisError, setDeepAnalysisError] = useState<string | null>(null);
+
   useEffect(() => {
     if (!isAuthenticated()) { router.replace("/login"); return; }
 
@@ -424,6 +430,12 @@ function AuditResultsContent() {
         _fetchBenchmarks();
       }
 
+      // Restore deep analysis from saved data (skip re-fetching from Claude)
+      if (d.deep_analysis && typeof d.deep_analysis === "object" && Object.keys(d.deep_analysis).length > 0) {
+        setDeepAnalysis(d.deep_analysis as AnalysisResult);
+        setDeepAnalysisLoading(false);
+      }
+
       // Restore uploaded file info if sessionStorage is empty
       const s3Key = d.s3_key || d.csv_metadata?.s3_key;
       const meta = d.csv_metadata ?? {};
@@ -458,7 +470,13 @@ function AuditResultsContent() {
       }
     }
 
+    const VALID_BENCHMARK_TYPES = ["ads", "business_report", "account_health", "fba_inventory", "active_listings"];
+
     function _fetchBenchmarks() {
+      if (!VALID_BENCHMARK_TYPES.includes(reportType)) {
+        setBenchmarksLoading(false);
+        return;
+      }
       fetchWithAuth(`/api/benchmarks/${reportType}`)
         .then((r) => r.ok ? r.json() : r.json().then((d: { detail?: string }) => Promise.reject(d.detail ?? "Failed")))
         .then((d: BenchmarkData) => { setBenchmarks(d); })
@@ -467,18 +485,33 @@ function AuditResultsContent() {
     }
 
     function _fetchFresh(csv: CsvData | null) {
-      const benchmarksPromise = fetchWithAuth(`/api/benchmarks/${reportType}`)
-        .then((r) => r.ok ? r.json() : r.json().then((d: { detail?: string }) => Promise.reject(d.detail ?? "Failed")))
-        .then((d: BenchmarkData) => { setBenchmarks(d); return d; })
-        .catch((e: unknown) => { setBenchmarksError(String(e)); return null as BenchmarkData | null; })
-        .finally(() => setBenchmarksLoading(false));
+      const benchmarksPromise = VALID_BENCHMARK_TYPES.includes(reportType)
+        ? fetchWithAuth(`/api/benchmarks/${reportType}`)
+            .then(async (r) => {
+              if (r.ok) return r.json();
+              const text = await r.text();
+              let detail = text;
+              try { detail = JSON.parse(text)?.detail ?? text; } catch { /* plain text error */ }
+              return Promise.reject(detail);
+            })
+            .then((d: BenchmarkData) => { setBenchmarks(d); return d; })
+            .catch((e: unknown) => { setBenchmarksError(String(e)); return null as BenchmarkData | null; })
+            .finally(() => setBenchmarksLoading(false))
+        : Promise.resolve(null as BenchmarkData | null).finally(() => setBenchmarksLoading(false));
 
       const analysisPromise = fetchWithAuth("/api/audit/analyze", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ brand_name: brandName, niche, marketplace, report_type: reportType, audit_purpose: auditPurpose, notes }),
       })
-        .then((r) => r.ok ? r.json() : r.json().then((d: { detail?: string }) => Promise.reject(d.detail ?? "Failed")))
+        .then(async (r) => {
+          if (r.ok) return r.json();
+          // Try JSON first, fall back to text for non-JSON error responses
+          const text = await r.text();
+          let detail = text;
+          try { detail = JSON.parse(text)?.detail ?? text; } catch { /* plain text error */ }
+          return Promise.reject(detail);
+        })
         .then((d: AnalyzeResponse) => { setAnalysis(d); return d; })
         .catch((e: unknown) => { setAnalysisError(String(e)); return null as AnalyzeResponse | null; })
         .finally(() => setAnalysisLoading(false));
@@ -578,6 +611,96 @@ function AuditResultsContent() {
         .catch(() => setProgressLoading(false));
     }
   }, [auditId, brandName, reportType]);
+
+  // ── Deep analysis: call Claude-powered /api/analyze when we have file data ──
+  useEffect(() => {
+    // Need either an S3 key or inline base64 file data
+    if ((!csvData?.s3_key && !csvData?.file_data) || deepAnalysis || deepAnalysisLoading) return;
+
+    setDeepAnalysisLoading(true);
+
+    // Collect S3 keys from multi-session upload (all slots)
+    const multiRaw = sessionStorage.getItem(`multi_session_${auditId}`);
+    const multiFiles: { s3_key?: string }[] = multiRaw ? (JSON.parse(multiRaw)?.files ?? []) : [];
+    const allS3Keys: string[] = multiFiles.map((f) => f.s3_key).filter(Boolean) as string[];
+
+    // Include primary file's S3 key if not already present
+    if (csvData.s3_key && !allS3Keys.includes(csvData.s3_key)) {
+      allS3Keys.push(csvData.s3_key);
+    }
+
+    // Collect inline files (base64 fallback when S3 unavailable)
+    const allInlineRaw = sessionStorage.getItem(`audit_all_files_${auditId}`);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const allInlineFiles: any[] = allInlineRaw ? JSON.parse(allInlineRaw) : [];
+
+    // Fall back to just the primary file if no multi-file data exists
+    if (allInlineFiles.length === 0 && csvData.file_data) {
+      allInlineFiles.push({
+        filename: csvData.filename || "upload.csv",
+        content: csvData.file_data,
+        content_type: csvData.file_mime || "text/csv",
+      });
+    }
+
+    const payload = {
+      session_id: auditId,
+      s3_keys: allS3Keys,
+      inline_files: allInlineFiles,
+      brand_name: brandName,
+      niche,
+      marketplace,
+    };
+
+    fetchWithAuth("/api/analyze", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    })
+      .then((r) => {
+        if (!r.ok) return r.json().then((d: { detail?: string }) => Promise.reject(d.detail ?? "Analysis failed"));
+        return r.json();
+      })
+      .then((data) => {
+        if (data?.analysis) {
+          setDeepAnalysis(data.analysis as AnalysisResult);
+
+          // Persist deep_analysis to DynamoDB so past audits load instantly
+          fetchWithAuth("/api/audit/update-deep-analysis", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              audit_id: auditId,
+              deep_analysis: data.analysis,
+            }),
+          })
+            .then((r) => {
+              if (r.ok) console.log("[deep-analysis] saved to DynamoDB");
+              else console.error("[deep-analysis] save failed", r.status);
+            })
+            .catch((err) => console.error("[deep-analysis] save error", err));
+
+          // Update local cache too
+          try {
+            const cached = localStorage.getItem(`audit_report_${auditId}`);
+            if (cached) {
+              const parsed = JSON.parse(cached);
+              if (parsed.data) {
+                parsed.data.deep_analysis = data.analysis;
+                localStorage.setItem(`audit_report_${auditId}`, JSON.stringify(parsed));
+              }
+            }
+          } catch { /* ignore */ }
+        }
+      })
+      .catch((e: unknown) => {
+        console.error("[deep-analysis] Error:", e);
+        setDeepAnalysisError(String(e));
+      })
+      .finally(() => setDeepAnalysisLoading(false));
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [csvData?.s3_key, csvData?.file_data, auditId]);
 
   const reportColor = REPORT_COLORS[reportType] || "#f59e0b";
 
@@ -916,10 +1039,34 @@ function AuditResultsContent() {
           )}
         </section>
 
-        {/* ── Section 2: Industry Benchmarks ── */}
+        {/* ── Section 2: AI Deep Analysis (Claude-powered) ── */}
+        <section>
+          <h3 className="text-lg font-semibold text-slate-100 mb-6 flex items-center gap-2">
+            <span className="w-6 h-6 rounded-full bg-purple-500/20 border border-purple-500/40 flex items-center justify-center text-xs text-purple-400 font-bold">2</span>
+            AI Performance Analysis
+          </h3>
+
+          {deepAnalysisLoading && <AnalysisLoading />}
+          {deepAnalysisError && !deepAnalysisLoading && (
+            <div className="rounded-2xl border border-red-500/30 bg-red-500/10 p-6">
+              <p className="text-sm font-semibold text-red-300 mb-1">Analysis unavailable</p>
+              <p className="text-sm text-slate-400">{deepAnalysisError}</p>
+            </div>
+          )}
+          {deepAnalysis && !deepAnalysisLoading && (
+            <AuditResults data={deepAnalysis} />
+          )}
+          {!deepAnalysisLoading && !deepAnalysisError && !deepAnalysis && !csvData?.s3_key && (
+            <div className="rounded-2xl border border-slate-800 bg-slate-900/50 p-8 text-center">
+              <p className="text-sm text-slate-400">Upload a file with your audit to unlock AI-powered performance analysis</p>
+            </div>
+          )}
+        </section>
+
+        {/* ── Section 3: Industry Benchmarks ── */}
         <section>
           <h3 className="text-lg font-semibold text-slate-100 mb-4 flex items-center gap-2">
-            <span className="w-6 h-6 rounded-full bg-amber-500/20 border border-amber-500/40 flex items-center justify-center text-xs text-amber-400 font-bold">2</span>
+            <span className="w-6 h-6 rounded-full bg-amber-500/20 border border-amber-500/40 flex items-center justify-center text-xs text-amber-400 font-bold">3</span>
             Industry Benchmarks
           </h3>
           {benchmarksLoading && <LoadingCard label="Fetching live industry benchmarks..." />}
@@ -993,10 +1140,10 @@ function AuditResultsContent() {
           )}
         </section>
 
-        {/* ── Section 3: Recommendations ── */}
+        {/* ── Section 4: Recommendations ── */}
         <section>
           <h3 className="text-lg font-semibold text-slate-100 mb-6 flex items-center gap-2">
-            <span className="w-6 h-6 rounded-full bg-emerald-500/20 border border-emerald-500/40 flex items-center justify-center text-xs text-emerald-400 font-bold">3</span>
+            <span className="w-6 h-6 rounded-full bg-emerald-500/20 border border-emerald-500/40 flex items-center justify-center text-xs text-emerald-400 font-bold">4</span>
             Improvement Recommendations
           </h3>
           {analysisLoading && <LoadingCard label="Generating tailored recommendations..." />}
@@ -1061,13 +1208,13 @@ function AuditResultsContent() {
           )}
         </section>
 
-        {/* ── Section 4: Progress Tracking ── */}
+        {/* ── Section 5: Progress Tracking ── */}
         {(() => {
           if (progressLoading) {
             return (
               <section>
                 <h3 className="text-lg font-semibold text-slate-100 mb-4 flex items-center gap-2">
-                  <span className="w-6 h-6 rounded-full bg-cyan-500/20 border border-cyan-500/40 flex items-center justify-center text-xs text-cyan-400 font-bold">4</span>
+                  <span className="w-6 h-6 rounded-full bg-cyan-500/20 border border-cyan-500/40 flex items-center justify-center text-xs text-cyan-400 font-bold">5</span>
                   Progress Tracking
                 </h3>
                 <LoadingCard label="Looking for previous audits to compare..." />
@@ -1180,6 +1327,11 @@ function AuditResultsContent() {
             </section>
           );
         })()}
+
+        {/* ── Gated CTA — after all sections ── */}
+        {deepAnalysis?.gatedInsights && (
+          <GatedCta gated={deepAnalysis.gatedInsights} />
+        )}
 
       </main>
 

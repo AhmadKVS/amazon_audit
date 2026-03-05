@@ -323,7 +323,7 @@ async def analyze(req: BusinessReportRequest, user: str = Depends(get_current_us
 
     # Step 2: AI synthesis
     try:
-        async with httpx.AsyncClient(timeout=60.0) as client:
+        async with httpx.AsyncClient(timeout=120.0) as client:
             try:
                 synthesis = await _ai_synthesize(client, diagnostics, req)
             except json.JSONDecodeError:

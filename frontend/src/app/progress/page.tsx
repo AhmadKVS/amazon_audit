@@ -207,23 +207,43 @@ export default function ProgressPage() {
     const fetchAll = async () => {
       const results: BrandProgress[] = [];
 
-      for (const group of brandGroups) {
-        // Fetch each audit's full data
-        const fullAudits: FullAudit[] = [];
-        for (const a of group.audits) {
-          const cached = getCachedReport(a.audit_id);
-          if (cached && (cached.benchmark_metrics || cached.csv_metadata)) {
-            fullAudits.push(cached);
-            continue;
-          }
-          try {
-            const r = await fetchWithAuth(`/api/audit/${a.audit_id}`);
-            if (r.ok) {
-              const data = await r.json();
-              fullAudits.push(data);
-            }
-          } catch { /* skip */ }
+      // Collect all audit IDs across groups, check cache first
+      const allAuditIds = brandGroups.flatMap((g) => g.audits.map((a) => a.audit_id));
+      const cachedMap: Record<string, FullAudit> = {};
+      const uncachedIds: string[] = [];
+      for (const id of allAuditIds) {
+        const cached = getCachedReport(id);
+        if (cached && (cached.benchmark_metrics || cached.csv_metadata)) {
+          cachedMap[id] = cached;
+        } else {
+          uncachedIds.push(id);
         }
+      }
+
+      // Batch-fetch all uncached audits in ONE request
+      let fetchedMap: Record<string, FullAudit> = {};
+      if (uncachedIds.length > 0) {
+        try {
+          const r = await fetchWithAuth("/api/audit/batch", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ audit_ids: uncachedIds }),
+          });
+          if (r.ok) {
+            const data = await r.json();
+            for (const audit of data.audits ?? []) {
+              fetchedMap[audit.audit_id] = audit;
+            }
+          }
+        } catch { /* skip */ }
+      }
+
+      const allMap = { ...cachedMap, ...fetchedMap };
+
+      for (const group of brandGroups) {
+        const fullAudits: FullAudit[] = group.audits
+          .map((a) => allMap[a.audit_id])
+          .filter(Boolean);
 
         // Get benchmark metric definitions from the most recent audit
         const benchmarkMetrics: BenchmarkMetric[] =

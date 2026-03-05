@@ -28,6 +28,9 @@ class Settings(BaseSettings):
 
     # Perplexity Sonar (real-time benchmarks)
     PERPLEXITY_API_KEY: str = ""
+
+    # Anthropic Claude (AI analysis)
+    ANTHROPIC_API_KEY: str = ""
     
     class Config:
         env_file = str(_ENV_FILE)

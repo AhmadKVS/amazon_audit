@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { isAuthenticated, signOut, fetchWithAuth } from "@/lib/auth";
@@ -34,6 +34,19 @@ function parseLocalCsv(text: string): { headers: string[]; rows: Record<string, 
     return Object.fromEntries(headers.map((h, i) => [h, vals[i] ?? ""]));
   });
   return { headers, rows };
+}
+
+/** Map backend human-readable report types to frontend slot keys used by benchmarks API. */
+function normalizeReportType(backendType: string): string | null {
+  const t = backendType.toLowerCase();
+  if (t === "business report") return "business_report";
+  if (t === "active listings report") return "active_listings";
+  if (t === "account health report") return "account_health";
+  if (t.includes("advertising") || t.includes("sponsored") || t === "ads") return "ads";
+  if (t.includes("search term")) return "ads";
+  if (t === "fba inventory report") return "fba_inventory";
+  // Unrecognized — return null so caller falls back to slotKey
+  return null;
 }
 
 function detectReportType(columns: string[]): string {
@@ -102,6 +115,238 @@ interface PastAudit {
   audit_purpose: string;
   notes:         string;
   created_at:    string;
+}
+
+// ── Upload slot configuration ──────────────────────────────────────────────
+
+type SlotKey = "business_report" | "search_terms" | "query_performance" | "additional";
+
+interface SlotConfig {
+  key: SlotKey;
+  label: string;
+  badge: "required" | "recommended" | "optional";
+  helperText: string;
+  acceptMultiple: boolean;
+}
+
+const UPLOAD_SLOTS: SlotConfig[] = [
+  {
+    key: "business_report",
+    label: "Business Report",
+    badge: "required",
+    helperText: 'Download from Seller Central: Reports > Business Reports > "By ASIN" or "Detail Page Sales and Traffic"',
+    acceptMultiple: false,
+  },
+  {
+    key: "search_terms",
+    label: "Search Terms Report",
+    badge: "recommended",
+    helperText: "Download from Seller Central: Reports > Advertising Reports > Search Term Report",
+    acceptMultiple: false,
+  },
+  {
+    key: "query_performance",
+    label: "Query Performance Report",
+    badge: "recommended",
+    helperText: "Download from Seller Central: Brand Analytics > Search Query Performance",
+    acceptMultiple: false,
+  },
+  {
+    key: "additional",
+    label: "Additional Files",
+    badge: "optional",
+    helperText: "Any other relevant reports, such as Active Listings, Account Health, FBA Inventory, or custom documents",
+    acceptMultiple: true,
+  },
+];
+
+interface SlotFile {
+  raw: File;
+  parsed: UploadedFile | null; // null while parsing in progress
+  error: string | null;
+  progress: number; // 0 = idle, 1-100 = processing
+}
+
+type SlotState = { [K in SlotKey]: SlotFile[] };
+
+const BADGE_STYLES: Record<string, string> = {
+  required:    "bg-red-500/15 text-red-400 border border-red-500/30",
+  recommended: "bg-amber-500/15 text-amber-400 border border-amber-500/30",
+  optional:    "bg-slate-700/60 text-slate-400 border border-slate-600/40",
+};
+
+const BADGE_LABELS: Record<string, string> = {
+  required:    "Required",
+  recommended: "Recommended",
+  optional:    "Optional",
+};
+
+const ACCEPTED_EXTS = ["csv", "xlsx", "xls", "docx", "pdf"];
+
+// ── SlotUploadZone component ────────────────────────────────────────────────
+
+interface SlotUploadZoneProps {
+  config: SlotConfig;
+  files: SlotFile[];
+  onFilesAdded: (slot: SlotKey, files: File[]) => void;
+  onFileRemoved: (slot: SlotKey, index: number) => void;
+}
+
+function SlotUploadZone({ config, files, onFilesAdded, onFileRemoved }: SlotUploadZoneProps) {
+  const inputRef = useRef<HTMLInputElement>(null);
+  const [isDragging, setIsDragging] = useState(false);
+
+  const handleDragOver = (e: React.DragEvent) => { e.preventDefault(); setIsDragging(true); };
+  const handleDragLeave = (e: React.DragEvent) => { e.preventDefault(); setIsDragging(false); };
+  const handleDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragging(false);
+    const dropped = Array.from(e.dataTransfer.files);
+    if (dropped.length) onFilesAdded(config.key, config.acceptMultiple ? dropped : [dropped[0]]);
+  };
+  const handleInput = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const selected = Array.from(e.target.files ?? []);
+    if (selected.length) onFilesAdded(config.key, config.acceptMultiple ? selected : [selected[0]]);
+    e.target.value = "";
+  };
+
+  const hasFiles = files.length > 0;
+  const anyProcessing = files.some((f) => f.progress > 0);
+
+  return (
+    <div className="rounded-xl border border-slate-800 bg-slate-900/50 p-4 space-y-3">
+      {/* Slot header */}
+      <div className="flex items-center justify-between gap-2">
+        <div className="flex items-center gap-2 min-w-0">
+          <span className="text-sm font-semibold text-slate-100 truncate">{config.label}</span>
+          <span className={`shrink-0 text-xs px-2 py-0.5 rounded-full font-medium ${BADGE_STYLES[config.badge]}`}>
+            {BADGE_LABELS[config.badge]}
+          </span>
+        </div>
+        {hasFiles && !anyProcessing && (
+          <button
+            type="button"
+            onClick={() => inputRef.current?.click()}
+            className="shrink-0 text-xs text-amber-400 hover:text-amber-300 transition-colors whitespace-nowrap"
+          >
+            {config.acceptMultiple ? "+ Add more" : "Replace"}
+          </button>
+        )}
+      </div>
+
+      {/* Helper text */}
+      <p className="text-xs text-slate-500 leading-relaxed">{config.helperText}</p>
+
+      {/* Hidden file input */}
+      <input
+        ref={inputRef}
+        type="file"
+        accept=".csv,.xlsx,.xls,.docx,.pdf"
+        multiple={config.acceptMultiple}
+        onChange={handleInput}
+        className="hidden"
+      />
+
+      {/* File list */}
+      {files.map((sf, i) => (
+        <div key={i}>
+          {sf.progress > 0 ? (
+            /* Processing state */
+            <div className="rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-3 flex items-center gap-3">
+              <div className="w-4 h-4 rounded-full border-2 border-amber-400 border-t-transparent animate-spin shrink-0" />
+              <div className="flex-1 min-w-0">
+                <p className="text-xs font-medium text-amber-300 truncate">{sf.raw.name}</p>
+                <p className="text-xs text-slate-500 mt-0.5">
+                  {sf.progress < 40 ? "Reading file..." : sf.progress < 75 ? "Processing data..." : "Finishing up..."}
+                </p>
+                <div className="mt-2 h-1 rounded-full bg-slate-700 overflow-hidden">
+                  <div
+                    className="h-full rounded-full bg-amber-400 transition-all duration-500 ease-out"
+                    style={{ width: `${sf.progress}%` }}
+                  />
+                </div>
+              </div>
+            </div>
+          ) : sf.error ? (
+            /* Error state */
+            <div className="rounded-lg border border-red-500/40 bg-red-500/10 px-3 py-2.5 flex items-start justify-between gap-2">
+              <div className="flex items-start gap-2 min-w-0">
+                <svg className="h-4 w-4 text-red-400 shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                    d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                </svg>
+                <div className="min-w-0">
+                  <p className="text-xs font-medium text-red-300 truncate">{sf.raw.name}</p>
+                  <p className="text-xs text-red-400 mt-0.5">{sf.error}</p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => onFileRemoved(config.key, i)}
+                className="shrink-0 text-xs text-slate-500 hover:text-red-400 transition-colors mt-0.5"
+              >
+                Remove
+              </button>
+            </div>
+          ) : sf.parsed ? (
+            /* Success state */
+            <div className="rounded-lg border border-emerald-500/40 bg-emerald-500/10 px-3 py-2.5 flex items-start justify-between gap-2">
+              <div className="flex items-start gap-2 min-w-0">
+                <svg className="h-4 w-4 text-emerald-400 shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                    d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+                </svg>
+                <div className="min-w-0">
+                  <p className="text-xs font-medium text-emerald-300 truncate">{sf.parsed.name}</p>
+                  <p className="text-xs text-slate-500 mt-0.5">
+                    {sf.parsed.report_type === "document"
+                      ? `${sf.parsed.file_type.toUpperCase()} document`
+                      : `${sf.parsed.rows.toLocaleString()} rows · ${sf.parsed.columns.length} cols`}
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => onFileRemoved(config.key, i)}
+                className="shrink-0 text-xs text-slate-500 hover:text-red-400 transition-colors mt-0.5"
+              >
+                Remove
+              </button>
+            </div>
+          ) : null}
+        </div>
+      ))}
+
+      {/* Drop zone — show when no files yet, or for multi-slot always show a compact add zone */}
+      {(!hasFiles || (config.acceptMultiple && !anyProcessing)) && (
+        <button
+          type="button"
+          onClick={() => inputRef.current?.click()}
+          onDragOver={handleDragOver}
+          onDragLeave={handleDragLeave}
+          onDrop={handleDrop}
+          className={`w-full flex items-center justify-center gap-2 rounded-lg border-2 border-dashed py-5 transition-colors ${
+            isDragging
+              ? "border-amber-500 bg-amber-500/10"
+              : hasFiles
+              ? "border-slate-700/60 bg-slate-800/20 hover:border-slate-600 hover:bg-slate-800/30"
+              : "border-slate-700 bg-slate-800/30 hover:border-slate-600 hover:bg-slate-800/50"
+          }`}
+        >
+          <svg className="h-5 w-5 text-slate-500 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5}
+              d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
+          </svg>
+          <div className="text-left">
+            <p className="text-xs font-medium text-slate-300">
+              {isDragging ? "Drop file here" : hasFiles ? "Drop another file or click to browse" : "Drag & drop or click to browse"}
+            </p>
+            <p className="text-xs text-slate-600">CSV, Excel (.xlsx/.xls), Word (.docx), or PDF</p>
+          </div>
+        </button>
+      )}
+    </div>
+  );
 }
 
 // ── Past Audits Panel ──────────────────────────────────────────────────────
@@ -278,14 +523,18 @@ export default function Dashboard() {
   const [auditPurpose, setAuditPurpose] = useState("");
   const [fileType, setFileType]         = useState("business_report");
   const [notes, setNotes]               = useState("");
-  const [uploadedFile, setUploadedFile] = useState<UploadedFile | null>(null);
-  const [isDragging, setIsDragging]     = useState(false);
-  const [fileError, setFileError]       = useState<string | null>(null);
-  const [uploadProgress, setUploadProgress] = useState(0); // 0 = idle, 1-100 = uploading
   const [submitting, setSubmitting]     = useState(false);
   const [detailedReport, setDetailedReport] = useState(false);
 
-  const inputRef = useRef<HTMLInputElement>(null);
+  // ── Multi-slot upload state ──────────────────────────────────────────────
+  const emptySlots = (): SlotState => ({
+    business_report:   [],
+    search_terms:      [],
+    query_performance: [],
+    additional:        [],
+  });
+  const [slots, setSlots] = useState<SlotState>(emptySlots);
+  const [multiUploadError, setMultiUploadError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!isAuthenticated()) { router.replace("/login"); }
@@ -307,138 +556,269 @@ export default function Dashboard() {
       ? existingBrands
       : [];
 
-  const processFile = async (file: File) => {
-    const ext = file.name.includes(".")
-      ? file.name.split(".").pop()!.toLowerCase()
-      : "";
-    const accepted = ["csv", "xlsx", "xls", "docx", "pdf"];
-    if (!accepted.includes(ext)) {
-      setFileError("Supported formats: CSV, Excel (.xlsx/.xls), Word (.docx), PDF");
-      return;
-    }
-    setFileError(null);
-    setUploadProgress(10);
+  // ── Per-slot file processing ────────────────────────────────────────────
 
-    // Read file as base64 for later viewing/downloading
-    const fileBase64 = await new Promise<string>((resolve) => {
+  const processSingleFile = useCallback(async (
+    file: File,
+    slotKey: SlotKey,
+    fileIndex: number,
+    setProgress: (p: number) => void,
+  ): Promise<UploadedFile> => {
+    const ext = file.name.includes(".") ? file.name.split(".").pop()!.toLowerCase() : "";
+    if (!ACCEPTED_EXTS.includes(ext)) {
+      throw new Error("Supported formats: CSV, Excel (.xlsx/.xls), Word (.docx), PDF");
+    }
+
+    setProgress(10);
+
+    // Read base64 for local viewing
+    const fileBase64 = await new Promise<string>((resolve, reject) => {
       const reader = new FileReader();
       reader.onload = () => resolve((reader.result as string).split(",")[1]);
+      reader.onerror = () => reject(new Error("Could not read file"));
       reader.readAsDataURL(file);
     });
     const fileMime = file.type || "application/octet-stream";
-    setUploadProgress(30);
+    setProgress(25);
 
-    // CSV: parse client-side (fast, no round-trip needed)
+    // CSV: parse client-side
     if (ext === "csv") {
-      setUploadProgress(50);
+      setProgress(50);
       const text = await file.text();
-      setUploadProgress(70);
+      setProgress(75);
       const { headers, rows } = parseLocalCsv(text);
-      if (!headers.length) { setFileError("CSV file appears to be empty."); return; }
+      if (!headers.length) throw new Error("CSV file appears to be empty.");
       const rowCount = text.split(/\r?\n/).filter((l) => l.trim()).length - 1;
       const detected = detectReportType(headers);
-      setUploadedFile({
+      setProgress(100);
+      return {
         name: file.name, file_type: "csv",
-        rows: rowCount, report_type: detected !== "unknown" ? detected : fileType,
+        rows: rowCount,
+        report_type: detected !== "unknown" ? detected : slotKey,
         columns: headers, preview: rows,
         file_data: fileBase64, file_mime: fileMime,
-      });
-      setUploadProgress(0);
-      return;
+      };
     }
 
-    // Excel / Word / PDF: send to backend for parsing
-    setFileError(null);
-    setUploadProgress(40);
-    try {
-      const form = new FormData();
-      form.append("file", file);
-      setUploadProgress(50);
-      const resp = await fetchWithAuth("/api/upload/csv", { method: "POST", body: form });
-      setUploadProgress(75);
-      if (!resp.ok) {
-        const err = await resp.json().catch(() => ({ detail: "Upload failed" }));
-        setFileError(err.detail ?? "Upload failed");
-        return;
-      }
-      setUploadProgress(90);
-      const data = await resp.json();
-      setUploadedFile({
-        name:        data.filename,
-        file_type:   data.file_type ?? ext,
-        rows:        data.rows ?? 0,
-        report_type: data.report_type !== "unknown" ? data.report_type : fileType,
-        columns:     data.columns ?? [],
-        preview:     data.preview ?? [],
-        raw_text:    data.raw_text,
-        s3_key:      data.s3_key,
-        file_data:   fileBase64, file_mime: fileMime,
-      });
-      if (data.report_type && data.report_type !== "unknown" && data.report_type !== "document") {
-        setFileType(data.report_type);
-      }
-    } catch {
-      setFileError("Failed to upload file — please try again");
-    } finally {
-      setUploadProgress(0);
+    // Excel / Word / PDF: send to backend via existing single-file endpoint
+    setProgress(40);
+    const form = new FormData();
+    form.append("file", file);
+    setProgress(55);
+    const resp = await fetchWithAuth("/api/upload/csv", { method: "POST", body: form });
+    setProgress(80);
+    if (!resp.ok) {
+      const err = await resp.json().catch(() => ({ detail: "Upload failed" }));
+      throw new Error(err.detail ?? "Upload failed");
     }
-  };
+    const data = await resp.json();
+    setProgress(100);
+    return {
+      name:        data.filename,
+      file_type:   data.file_type ?? ext,
+      rows:        data.rows ?? 0,
+      report_type: normalizeReportType(data.report_type ?? "") ?? slotKey,
+      columns:     data.columns ?? [],
+      preview:     data.preview ?? [],
+      raw_text:    data.raw_text,
+      s3_key:      data.s3_key,
+      file_data:   fileBase64,
+      file_mime:   fileMime,
+    };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [fileType]);
 
-  const handleFileInput = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0]; if (!file) return;
-    await processFile(file); e.target.value = "";
-  };
+  const handleFilesAdded = useCallback(async (slotKey: SlotKey, files: File[]) => {
+    setMultiUploadError(null);
 
-  const handleDragOver  = (e: React.DragEvent) => { e.preventDefault(); setIsDragging(true); };
-  const handleDragLeave = (e: React.DragEvent) => { e.preventDefault(); setIsDragging(false); };
-  const handleDrop      = async (e: React.DragEvent) => {
-    e.preventDefault(); setIsDragging(false);
-    const file = e.dataTransfer.files?.[0]; if (file) await processFile(file);
-  };
+    // For non-multiple slots, replace existing file
+    const config = UPLOAD_SLOTS.find((s) => s.key === slotKey)!;
+    const newSlotFiles: SlotFile[] = files.map((f) => ({
+      raw: f, parsed: null, error: null, progress: 5,
+    }));
+
+    setSlots((prev) => {
+      const existing = config.acceptMultiple ? prev[slotKey] : [];
+      return { ...prev, [slotKey]: [...existing, ...newSlotFiles] };
+    });
+
+    // Process each new file
+    for (let i = 0; i < files.length; i++) {
+      const file = files[i];
+      // Determine actual index in the slot array
+      const slotIndexOffset = config.acceptMultiple
+        ? (slots[slotKey]?.length ?? 0) + i
+        : i;
+
+      const setProgress = (p: number) => {
+        setSlots((prev) => {
+          const updated = [...prev[slotKey]];
+          // For single-slot replace, we only have one new file at index 0
+          const targetIdx = config.acceptMultiple ? slotIndexOffset : 0;
+          if (updated[targetIdx]) {
+            updated[targetIdx] = { ...updated[targetIdx], progress: p };
+          }
+          return { ...prev, [slotKey]: updated };
+        });
+      };
+
+      try {
+        const parsed = await processSingleFile(file, slotKey, slotIndexOffset, setProgress);
+        setSlots((prev) => {
+          const updated = [...prev[slotKey]];
+          const targetIdx = config.acceptMultiple ? slotIndexOffset : 0;
+          if (updated[targetIdx]) {
+            updated[targetIdx] = { ...updated[targetIdx], parsed, progress: 0, error: null };
+          }
+          return { ...prev, [slotKey]: updated };
+        });
+        // Auto-set fileType from business_report slot
+        if (slotKey === "business_report" && parsed.report_type !== "unknown" && parsed.report_type !== "document") {
+          setFileType(normalizeReportType(parsed.report_type) ?? parsed.report_type);
+        }
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : "Failed to process file";
+        setSlots((prev) => {
+          const updated = [...prev[slotKey]];
+          const targetIdx = config.acceptMultiple ? slotIndexOffset : 0;
+          if (updated[targetIdx]) {
+            updated[targetIdx] = { ...updated[targetIdx], error: msg, progress: 0 };
+          }
+          return { ...prev, [slotKey]: updated };
+        });
+      }
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [processSingleFile, slots]);
+
+  const handleFileRemoved = useCallback((slotKey: SlotKey, index: number) => {
+    setSlots((prev) => {
+      const updated = prev[slotKey].filter((_, i) => i !== index);
+      return { ...prev, [slotKey]: updated };
+    });
+  }, []);
+
+  // ── Derived state ────────────────────────────────────────────────────────
+
+  // First successfully parsed file from business_report slot (for legacy compat)
+  const primaryFile: UploadedFile | null =
+    slots.business_report.find((sf) => sf.parsed !== null)?.parsed ?? null;
+
+  const hasBusinessReport = slots.business_report.some((sf) => sf.parsed !== null);
+  const anySlotProcessing = Object.values(slots).flat().some((sf) => sf.progress > 0);
+
+  // Show the detailed business report toggle when a business report CSV with ASIN data is present
+  const showDetailedToggle = primaryFile
+    && (primaryFile.report_type === "business_report" || fileType === "business_report")
+    && isBusinessReportCsv(primaryFile.columns);
+
+  // ── Form submission ───────────────────────────────────────────────────────
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!brandName.trim()) return;
+
+    if (!hasBusinessReport) {
+      setMultiUploadError("Please upload a Business Report file before starting an audit.");
+      return;
+    }
+
     setSubmitting(true);
-    const auditId    = crypto.randomUUID();
+    setMultiUploadError(null);
+
+    const auditId = crypto.randomUUID();
+    const sessionId = crypto.randomUUID();
     const reportType = fileType;
 
-    // Detailed Business Report flow: extract ASIN metrics and route to /business-report
-    if (detailedReport && uploadedFile && showDetailedToggle) {
-      const asinMetrics = extractAsinMetrics(uploadedFile.preview, uploadedFile.columns);
+    // ── Detailed Business Report flow ─────────────────────────────────────
+    if (detailedReport && primaryFile && showDetailedToggle) {
+      const asinMetrics = extractAsinMetrics(primaryFile.preview, primaryFile.columns);
       sessionStorage.setItem(`business_report_${auditId}`, JSON.stringify({
         asin_metrics: asinMetrics,
-        csv_metadata: { filename: uploadedFile.name, rows: uploadedFile.rows, columns: uploadedFile.columns },
+        csv_metadata: { filename: primaryFile.name, rows: primaryFile.rows, columns: primaryFile.columns },
+        session_id:   sessionId,
       }));
       const params = new URLSearchParams({
         brand_name: brandName.trim(), niche: niche.trim(), marketplace,
         audit_purpose: auditPurpose.trim(), notes: notes.trim(),
+        session_id: sessionId,
       });
       router.push(`/business-report/${auditId}?${params.toString()}`);
       return;
     }
 
-    // Standard audit flow
-    if (uploadedFile) {
-      // Store essential data (columns, preview) first — always small enough
-      sessionStorage.setItem(`audit_${auditId}`, JSON.stringify({
-        report_type: reportType, rows: uploadedFile.rows,
-        columns: uploadedFile.columns, preview: uploadedFile.preview,
-        filename: uploadedFile.name, file_type: uploadedFile.file_type,
-        raw_text: uploadedFile.raw_text, s3_key: uploadedFile.s3_key,
+    // ── Build multi-file FormData and send to /api/upload/multi ──────────
+    const allSuccessful = Object.entries(slots).flatMap(([slotKey, slotFiles]) =>
+      slotFiles
+        .filter((sf) => sf.parsed !== null)
+        .map((sf) => ({ slotKey: slotKey as SlotKey, sf }))
+    );
+
+    if (allSuccessful.length > 0) {
+      try {
+        const formData = new FormData();
+        formData.append("session_id", sessionId);
+
+        const labelsList: string[] = [];
+        for (const { slotKey, sf } of allSuccessful) {
+          formData.append("files", sf.raw);
+          labelsList.push(slotKey);
+        }
+        formData.append("slot_labels", JSON.stringify(labelsList));
+
+        const resp = await fetchWithAuth("/api/upload/multi", {
+          method: "POST",
+          body: formData,
+        });
+
+        if (resp.ok) {
+          const multiData = await resp.json();
+          // Store session metadata
+          sessionStorage.setItem(`multi_session_${auditId}`, JSON.stringify({
+            session_id: sessionId,
+            files: multiData.files,
+          }));
+        }
+        // Non-critical: continue even if multi-upload partially fails
+      } catch {
+        // Non-blocking — local parsed data is still stored below
+      }
+    }
+
+    // ── Store all slot files' inline data for /api/analyze fallback ────
+    const allInlineFiles = allSuccessful
+      .filter(({ sf }) => sf.parsed?.file_data)
+      .map(({ sf }) => ({
+        filename: sf.parsed!.name,
+        content: sf.parsed!.file_data!,
+        content_type: sf.parsed!.file_mime || "application/octet-stream",
       }));
-      // Store large file blob separately — may exceed quota for big PDFs
-      if (uploadedFile.file_data) {
+    try {
+      sessionStorage.setItem(`audit_all_files_${auditId}`, JSON.stringify(allInlineFiles));
+    } catch { /* quota exceeded */ }
+
+    // ── Standard audit flow: store primary file data in sessionStorage ────
+    if (primaryFile) {
+      sessionStorage.setItem(`audit_${auditId}`, JSON.stringify({
+        report_type: reportType, rows: primaryFile.rows,
+        columns: primaryFile.columns, preview: primaryFile.preview,
+        filename: primaryFile.name, file_type: primaryFile.file_type,
+        raw_text: primaryFile.raw_text, s3_key: primaryFile.s3_key,
+        session_id: sessionId,
+      }));
+      if (primaryFile.file_data) {
         try {
           sessionStorage.setItem(`audit_file_${auditId}`, JSON.stringify({
-            file_data: uploadedFile.file_data, file_mime: uploadedFile.file_mime,
+            file_data: primaryFile.file_data, file_mime: primaryFile.file_mime,
           }));
         } catch { /* quota exceeded — download will fall back to S3 */ }
       }
     }
+
     const params = new URLSearchParams({
       brand_name: brandName.trim(), niche: niche.trim(), marketplace,
       report_type: reportType, audit_purpose: auditPurpose.trim(), notes: notes.trim(),
+      session_id: sessionId,
     });
     router.push(`/audit/${auditId}?${params.toString()}`);
   };
@@ -451,12 +831,7 @@ export default function Dashboard() {
     );
   }
 
-  const fileTypeLabel = FILE_TYPES.find((f) => f.value === fileType)?.label ?? "File";
-
-  // Show the detailed business report toggle when a business report CSV with ASIN data is uploaded
-  const showDetailedToggle = uploadedFile
-    && (uploadedFile.report_type === "business_report" || fileType === "business_report")
-    && isBusinessReportCsv(uploadedFile.columns);
+  const submitDisabled = !brandName.trim() || submitting || anySlotProcessing || !hasBusinessReport;
 
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100">
@@ -485,6 +860,7 @@ export default function Dashboard() {
           </div>
 
           <form onSubmit={handleSubmit} className="space-y-6">
+            {/* Brand Details card */}
             <div className="rounded-2xl border border-slate-800 bg-slate-900/50 p-5 space-y-5">
               <div>
                 <h3 className="text-sm font-semibold text-slate-100">Brand Details</h3>
@@ -539,113 +915,98 @@ export default function Dashboard() {
                   placeholder="e.g. Identify gaps, optimize advertising performance..."
                   className="block w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-slate-100 placeholder-slate-500 focus:border-amber-500 focus:ring-1 focus:ring-amber-500 outline-none transition resize-none" />
               </div>
-
-              {/* Upload */}
-              <div>
-                <div className="flex items-center justify-between mb-2">
-                  <label className="block text-xs font-medium text-slate-400">Upload Data Files</label>
-                  <div className="flex items-center gap-1.5">
-                    <span className="text-xs text-slate-500">File Type:</span>
-                    <select value={fileType} onChange={(e) => setFileType(e.target.value)}
-                      className="rounded-lg border border-slate-700 bg-slate-800 px-2 py-1 text-xs text-slate-100 focus:border-amber-500 outline-none transition appearance-none">
-                      {FILE_TYPES.map((f) => <option key={f.value} value={f.value}>{f.label}</option>)}
-                    </select>
-                  </div>
-                </div>
-
-                <input ref={inputRef} type="file" accept=".csv,.xlsx,.xls,.docx,.pdf" onChange={handleFileInput} className="hidden" />
-
-                {uploadProgress > 0 ? (
-                  <div className="rounded-lg border border-amber-500/40 bg-amber-500/10 px-4 py-4 flex items-center gap-3">
-                    <div className="w-5 h-5 rounded-full border-2 border-amber-400 border-t-transparent animate-spin shrink-0" />
-                    <div className="flex-1 min-w-0">
-                      <p className="text-xs font-medium text-amber-300">
-                        {uploadProgress < 30 ? "Reading file..." : uploadProgress < 60 ? "Processing data..." : uploadProgress < 90 ? "Analyzing report..." : "Finishing up..."}
-                      </p>
-                      <div className="mt-2 h-1.5 rounded-full bg-slate-700 overflow-hidden">
-                        <div className="h-full rounded-full bg-amber-400 transition-all duration-500 ease-out" style={{ width: `${uploadProgress}%` }} />
-                      </div>
-                      <p className="text-xs text-slate-500 mt-1">{uploadProgress}%</p>
-                    </div>
-                  </div>
-                ) : uploadedFile ? (
-                  <div className="rounded-lg border border-emerald-500/40 bg-emerald-500/10 px-4 py-3 flex items-center justify-between">
-                    <div className="flex items-center gap-2">
-                      <svg className="h-4 w-4 text-emerald-400 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
-                      </svg>
-                      <div>
-                        <p className="text-xs font-medium text-emerald-300">{uploadedFile.name}</p>
-                        <p className="text-xs text-slate-500">
-                          {uploadedFile.report_type === "document"
-                            ? `${uploadedFile.file_type.toUpperCase()} document — used as context`
-                            : `${uploadedFile.rows.toLocaleString()} rows · ${uploadedFile.columns.length} cols`}
-                        </p>
-                      </div>
-                    </div>
-                    <button type="button" onClick={() => setUploadedFile(null)} className="text-xs text-slate-500 hover:text-red-400 transition-colors">Remove</button>
-                  </div>
-                ) : (
-                  <button type="button" onClick={() => inputRef.current?.click()}
-                    onDragOver={handleDragOver} onDragLeave={handleDragLeave} onDrop={handleDrop}
-                    className={`w-full flex flex-col items-center justify-center rounded-lg border-2 border-dashed py-8 transition-colors ${
-                      isDragging ? "border-amber-500 bg-amber-500/10" : "border-slate-700 bg-slate-800/30 hover:border-slate-600 hover:bg-slate-800/50"
-                    }`}>
-                    <svg className="h-8 w-8 text-slate-500 mb-1.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5}
-                        d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
-                    </svg>
-                    <p className="text-xs font-medium text-slate-300">{isDragging ? "Drop file here" : "Click to select a file"}</p>
-                    <p className="text-xs text-slate-600 mt-0.5">CSV, Excel, Word, or PDF</p>
-                  </button>
-                )}
-
-                {fileError && <p className="mt-1.5 text-xs text-red-400">{fileError}</p>}
-
-                {!uploadedFile && !fileError && (
-                  <div className="mt-2 flex items-start gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2">
-                    <svg className="h-3.5 w-3.5 text-amber-400 shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
-                        d="M12 9v2m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" />
-                    </svg>
-                    <p className="text-xs text-amber-300">No data files uploaded. Reports require at least one data file to generate accurate analysis. You can't add files later from the audit page.</p>
-                  </div>
-                )}
-              </div>
-
-              {/* Detailed Business Report toggle */}
-              {showDetailedToggle && (
-                <button type="button" onClick={() => setDetailedReport(!detailedReport)}
-                  className={`w-full flex items-center gap-3 rounded-lg border px-4 py-3 transition-colors ${
-                    detailedReport
-                      ? "border-blue-500/50 bg-blue-500/10"
-                      : "border-slate-700 bg-slate-800/30 hover:border-slate-600"
-                  }`}>
-                  <div className={`w-9 h-5 rounded-full relative transition-colors ${detailedReport ? "bg-blue-500" : "bg-slate-600"}`}>
-                    <div className={`absolute top-0.5 w-4 h-4 rounded-full bg-white transition-transform ${detailedReport ? "left-[18px]" : "left-0.5"}`} />
-                  </div>
-                  <div className="text-left">
-                    <p className={`text-xs font-semibold ${detailedReport ? "text-blue-300" : "text-slate-300"}`}>
-                      Detailed Business Report Analysis
-                    </p>
-                    <p className="text-xs text-slate-500">
-                      Per-ASIN diagnostics, before/after projections, and executive summary
-                    </p>
-                  </div>
-                </button>
-              )}
-
-              <div>
-                <label className="block text-xs font-medium text-slate-400 mb-1">Additional Notes</label>
-                <textarea value={notes} onChange={(e) => setNotes(e.target.value)} rows={2}
-                  placeholder="Any specific focus areas or concerns for this audit?"
-                  className="block w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-slate-100 placeholder-slate-500 focus:border-amber-500 focus:ring-1 focus:ring-amber-500 outline-none transition resize-none" />
-              </div>
             </div>
 
-            <button type="submit" disabled={!brandName.trim() || submitting}
-              className="w-full rounded-xl bg-amber-500 px-6 py-3 text-sm font-semibold text-slate-950 hover:bg-amber-400 disabled:opacity-50 disabled:cursor-not-allowed transition-colors">
-              {submitting ? "Starting audit..." : detailedReport && showDetailedToggle ? "Generate Business Report" : "Start Audit"}
+            {/* Upload slots card */}
+            <div className="rounded-2xl border border-slate-800 bg-slate-900/50 p-5 space-y-4">
+              <div>
+                <h3 className="text-sm font-semibold text-slate-100">Upload Data Files</h3>
+                <p className="text-xs text-slate-500 mt-0.5">
+                  Upload your Amazon Seller Central exports. The Business Report is required; others improve analysis accuracy.
+                </p>
+              </div>
+
+              {/* Four labeled upload slots */}
+              <div className="space-y-3">
+                {UPLOAD_SLOTS.map((config) => (
+                  <SlotUploadZone
+                    key={config.key}
+                    config={config}
+                    files={slots[config.key]}
+                    onFilesAdded={handleFilesAdded}
+                    onFileRemoved={handleFileRemoved}
+                  />
+                ))}
+              </div>
+
+              {/* Validation error */}
+              {multiUploadError && (
+                <div className="flex items-start gap-2 rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2.5">
+                  <svg className="h-4 w-4 text-red-400 shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                      d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                  </svg>
+                  <p className="text-xs text-red-300">{multiUploadError}</p>
+                </div>
+              )}
+
+              {/* Info banner when no business report yet */}
+              {!hasBusinessReport && !multiUploadError && (
+                <div className="flex items-start gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2.5">
+                  <svg className="h-3.5 w-3.5 text-amber-400 shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                      d="M12 9v2m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" />
+                  </svg>
+                  <p className="text-xs text-amber-300">
+                    Upload a Business Report to enable audit submission. Additional reports improve analysis accuracy but are optional.
+                  </p>
+                </div>
+              )}
+            </div>
+
+            {/* Detailed Business Report toggle */}
+            {showDetailedToggle && (
+              <button type="button" onClick={() => setDetailedReport(!detailedReport)}
+                className={`w-full flex items-center gap-3 rounded-lg border px-4 py-3 transition-colors ${
+                  detailedReport
+                    ? "border-blue-500/50 bg-blue-500/10"
+                    : "border-slate-700 bg-slate-800/30 hover:border-slate-600"
+                }`}>
+                <div className={`w-9 h-5 rounded-full relative transition-colors ${detailedReport ? "bg-blue-500" : "bg-slate-600"}`}>
+                  <div className={`absolute top-0.5 w-4 h-4 rounded-full bg-white transition-transform ${detailedReport ? "left-[18px]" : "left-0.5"}`} />
+                </div>
+                <div className="text-left">
+                  <p className={`text-xs font-semibold ${detailedReport ? "text-blue-300" : "text-slate-300"}`}>
+                    Detailed Business Report Analysis
+                  </p>
+                  <p className="text-xs text-slate-500">
+                    Per-ASIN diagnostics, before/after projections, and executive summary
+                  </p>
+                </div>
+              </button>
+            )}
+
+            {/* Additional Notes */}
+            <div className="rounded-2xl border border-slate-800 bg-slate-900/50 p-5">
+              <label className="block text-xs font-medium text-slate-400 mb-1">Additional Notes</label>
+              <textarea value={notes} onChange={(e) => setNotes(e.target.value)} rows={2}
+                placeholder="Any specific focus areas or concerns for this audit?"
+                className="block w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-slate-100 placeholder-slate-500 focus:border-amber-500 focus:ring-1 focus:ring-amber-500 outline-none transition resize-none" />
+            </div>
+
+            <button
+              type="submit"
+              disabled={submitDisabled}
+              title={!hasBusinessReport ? "Upload a Business Report to enable submission" : undefined}
+              className="w-full rounded-xl bg-amber-500 px-6 py-3 text-sm font-semibold text-slate-950 hover:bg-amber-400 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+            >
+              {submitting
+                ? "Starting audit..."
+                : anySlotProcessing
+                ? "Processing files..."
+                : detailedReport && showDetailedToggle
+                ? "Generate Business Report"
+                : "Start Audit"}
             </button>
           </form>
         </div>

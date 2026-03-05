@@ -21,31 +21,47 @@ def parse_csv(contents: bytes) -> pd.DataFrame:
 def detect_report_type(df: pd.DataFrame) -> str:
     """
     Detect Amazon report type from column names.
-    Returns: business_report | active_listings | account_health | ads | fba_inventory | unknown
+    Returns a human-readable report type string.
     """
     cols_lower = " ".join(str(c).lower() for c in df.columns)
 
+    # Search Terms Report (most specific ads check — must be before generic ads)
+    if ("customer search term" in cols_lower or "search term" in cols_lower) and (
+        "campaign" in cols_lower or "ad group" in cols_lower
+    ):
+        return "Search Terms Report"
+
+    # Query Performance Report (Brand Analytics)
+    if "search query" in cols_lower or "query" in cols_lower and (
+        "query volume" in cols_lower or "impressions" in cols_lower
+    ):
+        return "Query Performance Report"
+
+    # Sponsored Products Campaign Report
+    if "campaign name" in cols_lower and "acos" in cols_lower and "search term" not in cols_lower:
+        return "Sponsored Products Report"
+
     # Business Report indicators
     if "ordered product sales" in cols_lower or "units ordered" in cols_lower:
-        return "business_report"
+        return "Business Report"
 
     # Active Listings
     if "listing id" in cols_lower or "seller sku" in cols_lower or "product id" in cols_lower:
-        return "active_listings"
+        return "Active Listings Report"
 
     # Account Health
     if "order defect rate" in cols_lower or "odr" in cols_lower or "late shipment" in cols_lower:
-        return "account_health"
+        return "Account Health Report"
 
-    # Ads
+    # Generic Ads / Advertising report
     if "acos" in cols_lower or "ad group" in cols_lower or "campaign" in cols_lower:
-        return "ads"
+        return "Advertising Report"
 
     # FBA Inventory
     if "fba" in cols_lower or "fulfillable" in cols_lower or "inbound" in cols_lower:
-        return "fba_inventory"
+        return "FBA Inventory Report"
 
-    return "unknown"
+    return "Unknown Report"
 
 
 def parse_excel(contents: bytes) -> pd.DataFrame:
