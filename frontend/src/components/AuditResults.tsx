@@ -181,7 +181,6 @@ function PerformanceSnapshot({
     <section className="space-y-3">
       <h3 className="text-lg font-semibold text-slate-100 mb-1">
         Performance Snapshot
-        <SectionSourceTag source={source} />
       </h3>
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
@@ -294,7 +293,6 @@ function ListingAnalysisCard({
           <Target className="w-5 h-5 text-amber-400" />
           <h4 className="text-sm font-semibold text-slate-200">
             Listing Analysis
-            <SectionSourceTag source={source} />
           </h4>
         </div>
         <span className={`px-3 py-1 rounded-full text-sm font-bold border ${scoreColor}`}>
@@ -465,7 +463,6 @@ function TopOpportunities({
     <section className="space-y-3">
       <h3 className="text-lg font-semibold text-slate-100 mb-1">
         Top 3 Opportunities
-        <SectionSourceTag source={source} />
       </h3>
 
       <div className="space-y-4">
