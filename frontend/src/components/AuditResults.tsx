@@ -106,45 +106,41 @@ function impactBadgeClasses(impact: "High Impact" | "Medium Impact" | "Low Impac
 // ── Source Tag Components ────────────────────────────────────────────────────
 
 function SourceTag({ source }: { source?: SourceInfo }) {
-  if (!source || source.method === "N/A") return null;
+  // Intentionally empty — detail is now shown via SourceDetailRow below the grid
+  void source;
+  return null;
+}
 
-  const [expanded, setExpanded] = React.useState(false);
+/** Shows source details for multiple metrics in a single row below a grid of stat boxes. */
+function SourceDetailRow({ sources }: { sources: { label: string; source?: SourceInfo }[] }) {
+  const valid = sources.filter((s) => s.source && s.source.method !== "N/A");
+  if (!valid.length) return null;
 
-  const methodColor = source.method.includes("CSV")
-    ? "text-emerald-500/70 border-emerald-500/30 bg-emerald-500/5"
-    : source.method.includes("PDF")
-    ? "text-blue-400/70 border-blue-400/30 bg-blue-400/5"
-    : source.method.includes("AI")
-    ? "text-purple-400/70 border-purple-400/30 bg-purple-400/5"
-    : "text-slate-500/70 border-slate-500/30 bg-slate-500/5";
+  // Extract short formula from detail (everything before "Rows:" metadata)
+  const shortDetail = (detail: string) => detail.split(/[.,]\s*Rows:/)[0];
 
   return (
-    <div className="relative mt-1">
-      <button
-        onClick={() => setExpanded(!expanded)}
-        className={`inline-flex items-center gap-1 text-[10px] leading-tight px-1.5 py-0.5 rounded border ${methodColor} hover:opacity-80 transition-opacity`}
-      >
-        <svg className="w-2.5 h-2.5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+    <div className="rounded-xl border border-slate-700/30 bg-slate-800/30 px-4 py-3 text-[11px]">
+      <div className="flex items-center gap-1.5 text-slate-500 mb-3">
+        <svg className="w-3.5 h-3.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
             d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
         </svg>
-        {source.method}
-      </button>
-      {expanded && (
-        <div className="absolute z-20 mt-1 left-0 w-64 rounded-lg border border-slate-700 bg-slate-800 p-3 text-xs shadow-xl">
-          <p className="text-slate-400">
-            <span className="text-slate-300 font-medium">File:</span> {source.file}
-          </p>
-          <p className="text-slate-400 mt-1">
-            <span className="text-slate-300 font-medium">Method:</span> {source.method}
-          </p>
-          {source.detail && (
-            <p className="text-slate-400 mt-1">
-              <span className="text-slate-300 font-medium">Detail:</span> {source.detail}
-            </p>
-          )}
-        </div>
-      )}
+        <span className="font-medium">How these numbers are calculated</span>
+      </div>
+      <div className="space-y-2.5">
+        {valid.map(({ label, source }) => (
+          <div key={label} className="border-l-2 border-slate-700 pl-3">
+            <p className="text-slate-300 font-medium">{label}</p>
+            {source!.detail && (
+              <p className="text-slate-500 mt-0.5">{shortDetail(source!.detail)}</p>
+            )}
+          </div>
+        ))}
+        <p className="text-slate-600 pt-1 border-t border-slate-800 break-all">
+          Source: {valid[0].source!.file}
+        </p>
+      </div>
     </div>
   );
 }
@@ -354,7 +350,6 @@ function PpcAnalysisCard({ data }: { data: AnalysisResult["ppcAnalysis"] }) {
             {acosNum !== null ? `${acosNum}%` : "N/A"}
           </p>
           <p className="text-xs text-slate-600">target: {targetNum !== null ? `${targetNum}%` : "N/A"}</p>
-          <SourceTag source={data.currentAcos_source} />
         </div>
         <div className="rounded-xl bg-slate-800/60 border border-slate-700/50 px-3 py-3 text-center">
           <p className="text-xs text-slate-500 mb-1">Wasted Spend (30d)</p>
@@ -362,7 +357,6 @@ function PpcAnalysisCard({ data }: { data: AnalysisResult["ppcAnalysis"] }) {
             {wastedNum !== null ? formatDollars(wastedNum) : "N/A"}
           </p>
           <p className="text-xs text-slate-600">recoverable</p>
-          <SourceTag source={data.wastedSpend30Days_source} />
         </div>
         <div className="rounded-xl bg-slate-800/60 border border-slate-700/50 px-3 py-3 text-center">
           <p className="text-xs text-slate-500 mb-1">Low Performers</p>
@@ -370,9 +364,14 @@ function PpcAnalysisCard({ data }: { data: AnalysisResult["ppcAnalysis"] }) {
             {lowPerfNum !== null ? lowPerfNum : "N/A"}
           </p>
           <p className="text-xs text-slate-600">campaigns</p>
-          <SourceTag source={data.lowPerformerCount_source} />
         </div>
       </div>
+
+      <SourceDetailRow sources={[
+        { label: "Current ACoS", source: data.currentAcos_source },
+        { label: "Wasted Spend", source: data.wastedSpend30Days_source },
+        { label: "Low Performers", source: data.lowPerformerCount_source },
+      ]} />
 
       {/* Weekly chart */}
       {hasWeekly && (

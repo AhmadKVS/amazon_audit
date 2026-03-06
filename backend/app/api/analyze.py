@@ -358,6 +358,83 @@ def calculate_ppc_metrics(df: "pd.DataFrame") -> Optional[dict]:
     return result
 
 
+def calculate_performance_snapshot(ppc: dict) -> dict:
+    """
+    Calculate revenue and profitability opportunity deterministically from PPC metrics.
+
+    Returns a dict matching the performanceSnapshot JSON schema with all numbers
+    derived from actual CSV data — no AI estimation.
+    """
+    meta = ppc["_meta"]
+    total_spend = meta["total_spend"]
+    total_sales = meta["total_sales"]
+    actual_days = meta["actual_days"]
+    current_acos = ppc["currentAcos"]
+    target_acos = ppc["targetAcos"]  # 35%
+    wasted_30d = ppc["wastedSpend30Days"]
+    zero_waste = meta["zero_waste"]
+    high_acos_waste = meta["high_acos_waste"]
+
+    # Scale to monthly
+    monthly_spend = round(total_spend * 30 / actual_days, 2)
+    monthly_sales = round(total_sales * 30 / actual_days, 2)
+    sales_per_dollar = total_sales / total_spend if total_spend > 0 else 0
+    high_acos_monthly = round(high_acos_waste * 30 / actual_days)
+
+    # ── Revenue Opportunity ──
+    # 1. PPC Waste Recovery: 50% of wasted spend redirected at current conversion ratio
+    rev_waste_recovery = round(wasted_30d * 0.5 * sales_per_dollar)
+    # 2. ACOS Optimization: excess spend above target converts to revenue
+    excess_acos_pct = max(0, (current_acos - target_acos) / 100)
+    rev_acos_opt = round(monthly_sales * excess_acos_pct)
+    # 3. Campaign Efficiency: 30% of low-performer budget recaptured
+    rev_campaign_eff = round(high_acos_monthly * 0.3 * sales_per_dollar)
+
+    total_rev_impact = rev_waste_recovery + rev_acos_opt + rev_campaign_eff
+    rev_pct = round(total_rev_impact / monthly_sales * 100) if monthly_sales > 0 else 0
+
+    # ── Profitability Opportunity (direct cost savings) ──
+    # 1. Eliminate wasted spend entirely
+    prof_waste = wasted_30d
+    # 2. ACOS reduction savings: spend reduction needed to hit target
+    prof_acos = round(monthly_spend * max(0, (current_acos - target_acos) / current_acos)) if current_acos > 0 else 0
+    # 3. Cut low-performer budgets
+    prof_campaign = high_acos_monthly
+
+    total_prof_savings = prof_waste + prof_acos + prof_campaign
+    prof_pct = round(total_prof_savings / monthly_spend * 100) if monthly_spend > 0 else 0
+
+    snapshot = {
+        "revenueOpportunity": {
+            "percentageIncrease": rev_pct,
+            "breakdown": [
+                {"label": "PPC Optimization & Waste Reduction", "monthlyImpact": rev_waste_recovery},
+                {"label": f"ACOS Optimization ({current_acos}% → {target_acos}%)", "monthlyImpact": rev_acos_opt},
+                {"label": "Campaign Structure Enhancement", "monthlyImpact": rev_campaign_eff},
+            ],
+            "totalMonthlyImpact": total_rev_impact,
+        },
+        "profitabilityOpportunity": {
+            "percentageIncrease": prof_pct,
+            "breakdown": [
+                {"label": "Eliminate Wasted Ad Spend", "monthlySavings": prof_waste},
+                {"label": f"ACOS Optimization ({current_acos}% to {target_acos}%)", "monthlySavings": prof_acos},
+                {"label": "Campaign Efficiency Improvements", "monthlySavings": prof_campaign},
+            ],
+            "totalMonthlySavings": total_prof_savings,
+        },
+    }
+
+    print(
+        f"[SNAPSHOT] Revenue: +{rev_pct}% (${total_rev_impact:,}/mo) | "
+        f"Profitability: +{prof_pct}% (${total_prof_savings:,}/mo) | "
+        f"Formulas: waste_recovery=${rev_waste_recovery:,} acos_opt=${rev_acos_opt:,} "
+        f"campaign_eff=${rev_campaign_eff:,}"
+    )
+
+    return snapshot
+
+
 _SYSTEM_PROMPT = """\
 You are an expert Amazon seller consultant specializing in revenue growth and profitability optimization.
 You will receive data exports from an Amazon seller's account (Business Reports, Advertising Reports, Search Terms Reports, etc.).
@@ -437,9 +514,12 @@ The JSON must have EXACTLY these top-level keys:
 PPC METRICS — PRE-CALCULATED:
 The PPC metrics (currentAcos, wastedSpend30Days, lowPerformerCount, targetAcos, weeklyData) have already been calculated by the backend Python engine and are provided at the top of the context under "PRE-CALCULATED METRICS". Use these exact values in your ppcAnalysis JSON. Do NOT recalculate them from the CSV text. If no pre-calculated metrics are provided, return "N/A" for all PPC fields.
 
-For each PPC metric _source field, set method to "Python backend calculation" and include the details from the pre-calculated section.
+For each PPC metric _source field, set method to "See calculation" and include the details from the pre-calculated section.
 
 Your role for PPC is analysis, recommendations, and insights — not arithmetic.
+
+PERFORMANCE SNAPSHOT — PRE-CALCULATED:
+If a "PERFORMANCE SNAPSHOT (PRE-CALCULATED)" section is provided in the context, use those exact percentages, breakdown labels, and dollar amounts in your performanceSnapshot JSON. Do NOT estimate your own revenue or profitability numbers — they have been calculated deterministically from the CSV data. If no pre-calculated snapshot is provided, generate your best estimates based on the data.
 
 OTHER RULES:
 - Base ALL numeric estimates on the actual data provided.
@@ -608,6 +688,29 @@ async def analyze_audit(
     else:
         ppc_context = ""
 
+    # ── 2a. Run deterministic Performance Snapshot calculations ───────────
+    python_snapshot: Optional[dict] = None
+    snapshot_context = ""
+    if python_ppc:
+        python_snapshot = calculate_performance_snapshot(python_ppc)
+        rev = python_snapshot["revenueOpportunity"]
+        prof = python_snapshot["profitabilityOpportunity"]
+        rev_breakdown = "\n".join(
+            f"  - {b['label']}: ${b['monthlyImpact']:,}/mo" for b in rev["breakdown"]
+        )
+        prof_breakdown = "\n".join(
+            f"  - {b['label']}: ${b['monthlySavings']:,}/mo" for b in prof["breakdown"]
+        )
+        snapshot_context = (
+            "\n=== PERFORMANCE SNAPSHOT (PRE-CALCULATED — USE EXACT VALUES) ===\n"
+            f"Revenue Opportunity: +{rev['percentageIncrease']}% (${rev['totalMonthlyImpact']:,}/mo)\n"
+            f"{rev_breakdown}\n"
+            f"Profitability Opportunity: +{prof['percentageIncrease']}% (${prof['totalMonthlySavings']:,}/mo)\n"
+            f"{prof_breakdown}\n"
+            "Use these exact numbers in performanceSnapshot. Do NOT estimate your own.\n"
+            "=== END PERFORMANCE SNAPSHOT ===\n\n"
+        )
+
     # ── 2b. Build combined context ─────────────────────────────────────────
     brand_info_parts = []
     if request.brand_name:
@@ -623,7 +726,7 @@ async def analyze_audit(
         + "\n\n== Uploaded Report Data ==\n"
     )
 
-    combined = header + ppc_context + "\n\n".join(file_texts) if file_texts else (
+    combined = header + ppc_context + snapshot_context + "\n\n".join(file_texts) if file_texts else (
         header + "[No report files were provided or could be parsed. "
         "Please generate best-effort estimates based on typical Amazon seller benchmarks "
         f"for {request.niche or 'general Amazon products'} on {request.marketplace}.]"
@@ -700,13 +803,13 @@ async def analyze_audit(
         # Override with Python values — these are deterministic and correct
         ppc["currentAcos"] = python_ppc["currentAcos"]
         ppc["currentAcos_source"] = _source(
-            ppc_source_file, "Python backend calculation",
+            ppc_source_file, "See calculation",
             f"${meta['total_spend']:,.2f} / ${meta['total_sales']:,.2f} * 100 = {python_ppc['currentAcos']}%. {detail_base}",
         )
 
         ppc["wastedSpend30Days"] = python_ppc["wastedSpend30Days"]
         ppc["wastedSpend30Days_source"] = _source(
-            ppc_source_file, "Python backend calculation",
+            ppc_source_file, "See calculation",
             f"Zero-conv: ${meta['zero_waste']:,.2f} + high ACOS: ${meta['high_acos_waste']:,.2f} "
             f"= ${meta['zero_waste'] + meta['high_acos_waste']:,.2f}, "
             f"scaled 30/{meta['actual_days']}d = ${python_ppc['wastedSpend30Days']:,}. {detail_base}",
@@ -714,7 +817,7 @@ async def analyze_audit(
 
         ppc["lowPerformerCount"] = python_ppc["lowPerformerCount"]
         ppc["lowPerformerCount_source"] = _source(
-            ppc_source_file, "Python backend calculation",
+            ppc_source_file, "See calculation",
             f"{python_ppc['lowPerformerCount']} campaigns (ACOS>45% or $10+ spend with 0 orders). Top: {lp_detail}. {detail_base}",
         )
 
@@ -728,7 +831,7 @@ async def analyze_audit(
         weeks = python_ppc["weeklyData"]
         week_summary = ", ".join(f"{w['week']}: ${w['adSpend']:,}/{w['sales']:,}" for w in weeks[:4])
         ppc["weeklyData_source"] = _source(
-            ppc_source_file, "Python backend calculation",
+            ppc_source_file, "See calculation",
             f"{len(weeks)} weeks grouped by ISO week from Start Date. {week_summary}",
         )
 
@@ -748,11 +851,27 @@ async def analyze_audit(
         val_display = val if not isinstance(val, list) else f"[{len(val)} weeks]"
         print(f"  {field}={val_display} | source: {src.get('method', 'unknown')} ({src.get('file', 'unknown')})")
 
+    # ── 5b. Override performanceSnapshot with Python-calculated values ──
+    if python_snapshot:
+        result["performanceSnapshot"] = python_snapshot
+        print(f"[STEP 5b] Python performanceSnapshot override applied")
+    else:
+        print(f"[STEP 5b] No Python snapshot — keeping Claude estimates")
+
     # ── 6. Add section-level sources ──────────────────────────────────────
     ai_file_label = ", ".join(parsed_filenames) if parsed_filenames else "all uploaded files"
-    for section in ("performanceSnapshot", "listingAnalysis", "topOpportunities", "gatedInsights"):
+    for section in ("listingAnalysis", "topOpportunities", "gatedInsights"):
         if section in result:
             result[f"{section}_source"] = _source(ai_file_label, "AI analysis (Claude)", "Generated from uploaded data context")
+
+    # performanceSnapshot source depends on whether Python-calculated or AI-estimated
+    if python_snapshot:
+        result["performanceSnapshot_source"] = _source(
+            ppc_source_file, "See calculation",
+            "Deterministic calculation from CSV ad spend data (wasted spend, ACOS gap, campaign efficiency)",
+        )
+    elif "performanceSnapshot" in result:
+        result["performanceSnapshot_source"] = _source(ai_file_label, "AI analysis (Claude)", "Generated from uploaded data context")
 
     return {
         "session_id": request.session_id,
