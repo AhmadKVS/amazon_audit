@@ -336,6 +336,7 @@ function AuditResultsContent() {
   const [deepAnalysisLoading, setDeepAnalysisLoading] = useState(false);
   const [deepAnalysisError, setDeepAnalysisError] = useState<string | null>(null);
   const deepAnalysisRestoredRef = useRef(false);
+  const loadedFromSavedRef = useRef(false);
 
   useEffect(() => {
     if (!isAuthenticated()) { router.replace("/login"); return; }
@@ -407,6 +408,9 @@ function AuditResultsContent() {
 
     // ── Apply saved/cached data to state ────────────────────────────────
     function _applyData(data: Record<string, unknown>) {
+      // Mark that this audit was loaded from a saved source (cache/DynamoDB)
+      // so the deep analysis useEffect won't re-trigger the AI call
+      loadedFromSavedRef.current = true;
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const d = data as any;
       setAnalysis({
@@ -616,8 +620,9 @@ function AuditResultsContent() {
 
   // ── Deep analysis: call Claude-powered /api/analyze when we have file data ──
   useEffect(() => {
-    // Skip if already restored from DynamoDB/cache, already loaded, or loading
-    if (deepAnalysisRestoredRef.current || deepAnalysis || deepAnalysisLoading) return;
+    // Skip if already restored from DynamoDB/cache, already loaded, loading,
+    // or this audit was loaded from a saved source (never re-run AI on past audits)
+    if (deepAnalysisRestoredRef.current || loadedFromSavedRef.current || deepAnalysis || deepAnalysisLoading) return;
     // Need either an S3 key or inline base64 file data
     if (!csvData?.s3_key && !csvData?.file_data) return;
 
@@ -1058,7 +1063,26 @@ function AuditResultsContent() {
             </div>
           )}
           {deepAnalysis && !deepAnalysisLoading && (
-            <AuditResults data={deepAnalysis} />
+            <AuditResults data={deepAnalysis} onUpdate={(updated) => {
+              setDeepAnalysis(updated);
+              // Save to DynamoDB
+              fetchWithAuth("/api/audit/update-deep-analysis", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ audit_id: auditId, deep_analysis: updated }),
+              }).catch(() => {});
+              // Update local cache
+              try {
+                const cached = localStorage.getItem(`audit_report_${auditId}`);
+                if (cached) {
+                  const parsed = JSON.parse(cached);
+                  if (parsed.data) {
+                    parsed.data.deep_analysis = updated;
+                    localStorage.setItem(`audit_report_${auditId}`, JSON.stringify(parsed));
+                  }
+                }
+              } catch { /* ignore */ }
+            }} />
           )}
           {!deepAnalysisLoading && !deepAnalysisError && !deepAnalysis && !csvData?.s3_key && (
             <div className="rounded-2xl border border-slate-800 bg-slate-900/50 p-8 text-center">

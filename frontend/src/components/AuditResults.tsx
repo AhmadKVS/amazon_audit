@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import {
   BarChart,
   Bar,
@@ -31,12 +31,14 @@ export interface AnalysisResult {
   performanceSnapshot: {
     revenueOpportunity: {
       percentageIncrease: number;
-      breakdown: { label: string; monthlyImpact: number }[];
+      percentageFormula?: string;
+      breakdown: { label: string; monthlyImpact: number; formula?: string }[];
       totalMonthlyImpact: number;
     };
     profitabilityOpportunity: {
       percentageIncrease: number;
-      breakdown: { label: string; monthlySavings: number }[];
+      percentageFormula?: string;
+      breakdown: { label: string; monthlySavings: number; formula?: string }[];
       totalMonthlySavings: number;
     };
   };
@@ -76,6 +78,111 @@ export interface AnalysisResult {
 
 interface AuditResultsProps {
   data: AnalysisResult;
+  onUpdate?: (updated: AnalysisResult) => void;
+}
+
+// ── Inline Editable Components ───────────────────────────────────────────────
+
+function EditableText({
+  value,
+  onChange,
+  className,
+}: {
+  value: string;
+  onChange?: (v: string) => void;
+  className?: string;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(value);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+  // Auto-resize textarea to fit content
+  useEffect(() => {
+    if (editing && textareaRef.current) {
+      const ta = textareaRef.current;
+      ta.style.height = "auto";
+      ta.style.height = ta.scrollHeight + "px";
+    }
+  }, [editing, draft]);
+
+  if (!onChange) return <span className={className}>{value}</span>;
+
+  if (editing) {
+    return (
+      <textarea
+        ref={textareaRef}
+        autoFocus
+        value={draft}
+        onChange={(e) => setDraft(e.target.value)}
+        onBlur={() => { setEditing(false); if (draft !== value) onChange(draft); }}
+        onKeyDown={(e) => {
+          if (e.key === "Escape") { setEditing(false); setDraft(value); }
+          if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) { setEditing(false); if (draft !== value) onChange(draft); }
+        }}
+        className={`${className} bg-transparent border border-dashed border-slate-500 outline-none w-full resize-none overflow-hidden rounded p-1`}
+        rows={1}
+      />
+    );
+  }
+
+  return (
+    <span
+      onClick={() => { setDraft(value); setEditing(true); }}
+      className={`${className} cursor-pointer hover:border-b hover:border-dashed hover:border-slate-500 transition-colors`}
+      title="Click to edit"
+    >
+      {value}
+    </span>
+  );
+}
+
+function EditableNumber({
+  value,
+  onChange,
+  className,
+  prefix = "",
+  suffix = "",
+}: {
+  value: number;
+  onChange?: (v: number) => void;
+  className?: string;
+  prefix?: string;
+  suffix?: string;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(String(value));
+
+  if (!onChange) return <span className={className}>{prefix}{value.toLocaleString()}{suffix}</span>;
+
+  const commit = () => {
+    setEditing(false);
+    const num = parseFloat(draft.replace(/[^0-9.\-]/g, ""));
+    if (!isNaN(num) && num !== value) onChange(num);
+    else setDraft(String(value));
+  };
+
+  if (editing) {
+    return (
+      <input
+        autoFocus
+        value={draft}
+        onChange={(e) => setDraft(e.target.value)}
+        onBlur={commit}
+        onKeyDown={(e) => { if (e.key === "Enter") commit(); if (e.key === "Escape") { setEditing(false); setDraft(String(value)); } }}
+        className={`${className} bg-transparent border-b border-dashed border-slate-500 outline-none w-20 text-right`}
+      />
+    );
+  }
+
+  return (
+    <span
+      onClick={() => { setDraft(String(value)); setEditing(true); }}
+      className={`${className} cursor-pointer hover:border-b hover:border-dashed hover:border-slate-500 transition-colors`}
+      title="Click to edit"
+    >
+      {prefix}{value.toLocaleString()}{suffix}
+    </span>
+  );
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
@@ -112,7 +219,7 @@ function SourceTag({ source }: { source?: SourceInfo }) {
 }
 
 /** Shows source details for multiple metrics in a single row below a grid of stat boxes. */
-function SourceDetailRow({ sources }: { sources: { label: string; source?: SourceInfo }[] }) {
+function SourceDetailRow({ sources, onDetailUpdate }: { sources: { label: string; source?: SourceInfo }[]; onDetailUpdate?: (label: string, newDetail: string) => void }) {
   const valid = sources.filter((s) => s.source && s.source.method !== "N/A");
   if (!valid.length) return null;
 
@@ -133,7 +240,11 @@ function SourceDetailRow({ sources }: { sources: { label: string; source?: Sourc
           <div key={label} className="border-l-2 border-slate-700 pl-3">
             <p className="text-slate-300 font-medium">{label}</p>
             {source!.detail && (
-              <p className="text-slate-500 mt-0.5">{shortDetail(source!.detail)}</p>
+              <EditableText
+                value={shortDetail(source!.detail)}
+                onChange={onDetailUpdate ? (v) => onDetailUpdate(label, v) : undefined}
+                className="text-slate-500 mt-0.5 block"
+              />
             )}
           </div>
         ))}
@@ -171,11 +282,27 @@ function SectionSourceTag({ source }: { source?: SourceInfo }) {
 function PerformanceSnapshot({
   data,
   source,
+  onUpdate,
 }: {
   data: AnalysisResult["performanceSnapshot"];
   source?: SourceInfo;
+  onUpdate?: (updated: AnalysisResult["performanceSnapshot"]) => void;
 }) {
   const { revenueOpportunity, profitabilityOpportunity } = data;
+
+  const updateRevBreakdown = (idx: number, patch: Partial<typeof revenueOpportunity.breakdown[0]>) => {
+    if (!onUpdate) return;
+    const breakdown = revenueOpportunity.breakdown.map((b, i) => i === idx ? { ...b, ...patch } : b);
+    const totalMonthlyImpact = breakdown.reduce((s, b) => s + b.monthlyImpact, 0);
+    onUpdate({ ...data, revenueOpportunity: { ...revenueOpportunity, breakdown, totalMonthlyImpact } });
+  };
+
+  const updateProfBreakdown = (idx: number, patch: Partial<typeof profitabilityOpportunity.breakdown[0]>) => {
+    if (!onUpdate) return;
+    const breakdown = profitabilityOpportunity.breakdown.map((b, i) => i === idx ? { ...b, ...patch } : b);
+    const totalMonthlySavings = breakdown.reduce((s, b) => s + b.monthlySavings, 0);
+    onUpdate({ ...data, profitabilityOpportunity: { ...profitabilityOpportunity, breakdown, totalMonthlySavings } });
+  };
 
   return (
     <section className="space-y-3">
@@ -197,18 +324,26 @@ function PerformanceSnapshot({
 
           <div>
             <p className="text-4xl font-bold text-blue-400">
-              +{revenueOpportunity.percentageIncrease}%
+              +<EditableNumber value={revenueOpportunity.percentageIncrease} onChange={onUpdate ? (v) => onUpdate({ ...data, revenueOpportunity: { ...revenueOpportunity, percentageIncrease: v } }) : undefined} className="text-4xl font-bold text-blue-400" suffix="%" />
             </p>
             <p className="text-xs text-slate-400 mt-1">estimated monthly revenue increase</p>
+            {revenueOpportunity.percentageFormula && (
+              <EditableText value={revenueOpportunity.percentageFormula} onChange={onUpdate ? (v) => onUpdate({ ...data, revenueOpportunity: { ...revenueOpportunity, percentageFormula: v } }) : undefined} className="text-xs text-slate-400/80 mt-1 font-mono block" />
+            )}
           </div>
 
-          <div className="space-y-2">
+          <div className="space-y-3">
             {revenueOpportunity.breakdown.map((item, i) => (
-              <div key={i} className="flex items-center justify-between text-sm">
-                <span className="text-slate-400 truncate pr-2">{item.label}</span>
-                <span className="text-emerald-400 font-medium shrink-0">
-                  +{formatDollars(item.monthlyImpact)}/mo
-                </span>
+              <div key={i}>
+                <div className="flex items-center justify-between text-sm gap-2">
+                  <EditableText value={item.label} onChange={onUpdate ? (v) => updateRevBreakdown(i, { label: v }) : undefined} className="text-slate-400 min-w-0" />
+                  <span className="text-emerald-400 font-medium shrink-0">
+                    +<EditableNumber value={item.monthlyImpact} onChange={onUpdate ? (v) => updateRevBreakdown(i, { monthlyImpact: v }) : undefined} className="text-emerald-400 font-medium" prefix="$" />/mo
+                  </span>
+                </div>
+                {item.formula && (
+                  <EditableText value={item.formula} onChange={onUpdate ? (v) => updateRevBreakdown(i, { formula: v }) : undefined} className="text-xs text-slate-400/80 mt-0.5 font-mono block" />
+                )}
               </div>
             ))}
           </div>
@@ -238,18 +373,26 @@ function PerformanceSnapshot({
 
           <div>
             <p className="text-4xl font-bold text-emerald-400">
-              +{profitabilityOpportunity.percentageIncrease}%
+              +<EditableNumber value={profitabilityOpportunity.percentageIncrease} onChange={onUpdate ? (v) => onUpdate({ ...data, profitabilityOpportunity: { ...profitabilityOpportunity, percentageIncrease: v } }) : undefined} className="text-4xl font-bold text-emerald-400" suffix="%" />
             </p>
             <p className="text-xs text-slate-400 mt-1">estimated monthly profitability increase</p>
+            {profitabilityOpportunity.percentageFormula && (
+              <EditableText value={profitabilityOpportunity.percentageFormula} onChange={onUpdate ? (v) => onUpdate({ ...data, profitabilityOpportunity: { ...profitabilityOpportunity, percentageFormula: v } }) : undefined} className="text-xs text-slate-400/80 mt-1 font-mono block" />
+            )}
           </div>
 
-          <div className="space-y-2">
+          <div className="space-y-3">
             {profitabilityOpportunity.breakdown.map((item, i) => (
-              <div key={i} className="flex items-center justify-between text-sm">
-                <span className="text-slate-400 truncate pr-2">{item.label}</span>
-                <span className="text-emerald-400 font-medium shrink-0">
-                  +{formatDollars(item.monthlySavings)}/mo
-                </span>
+              <div key={i}>
+                <div className="flex items-center justify-between text-sm gap-2">
+                  <EditableText value={item.label} onChange={onUpdate ? (v) => updateProfBreakdown(i, { label: v }) : undefined} className="text-slate-400 min-w-0" />
+                  <span className="text-emerald-400 font-medium shrink-0">
+                    +<EditableNumber value={item.monthlySavings} onChange={onUpdate ? (v) => updateProfBreakdown(i, { monthlySavings: v }) : undefined} className="text-emerald-400 font-medium" prefix="$" />/mo
+                  </span>
+                </div>
+                {item.formula && (
+                  <EditableText value={item.formula} onChange={onUpdate ? (v) => updateProfBreakdown(i, { formula: v }) : undefined} className="text-xs text-slate-400/80 mt-0.5 font-mono block" />
+                )}
               </div>
             ))}
           </div>
@@ -275,9 +418,11 @@ function PerformanceSnapshot({
 function ListingAnalysisCard({
   data,
   source,
+  onUpdate,
 }: {
   data: AnalysisResult["listingAnalysis"];
   source?: SourceInfo;
+  onUpdate?: (updated: AnalysisResult["listingAnalysis"]) => void;
 }) {
   const scoreColor =
     data.overallScore >= 75
@@ -319,13 +464,17 @@ function ListingAnalysisCard({
 
       <div className="rounded-lg bg-amber-500/10 border border-amber-500/20 px-4 py-3">
         <p className="text-xs font-semibold text-amber-400 mb-1">Key Finding</p>
-        <p className="text-sm text-slate-300 leading-relaxed">{data.keyFinding}</p>
+        <EditableText
+          value={data.keyFinding}
+          onChange={onUpdate ? (v) => onUpdate({ ...data, keyFinding: v }) : undefined}
+          className="text-sm text-slate-300 leading-relaxed"
+        />
       </div>
     </div>
   );
 }
 
-function PpcAnalysisCard({ data }: { data: AnalysisResult["ppcAnalysis"] }) {
+function PpcAnalysisCard({ data, onUpdate }: { data: AnalysisResult["ppcAnalysis"]; onUpdate?: (updated: AnalysisResult["ppcAnalysis"]) => void }) {
   const acosNum = typeof data.currentAcos === "number" ? data.currentAcos : null;
   const wastedNum = typeof data.wastedSpend30Days === "number" ? data.wastedSpend30Days : null;
   const lowPerfNum = typeof data.lowPerformerCount === "number" ? data.lowPerformerCount : null;
@@ -345,21 +494,21 @@ function PpcAnalysisCard({ data }: { data: AnalysisResult["ppcAnalysis"] }) {
         <div className="rounded-xl bg-slate-800/60 border border-slate-700/50 px-3 py-3 text-center">
           <p className="text-xs text-slate-500 mb-1">Current ACoS</p>
           <p className={`text-lg font-bold ${acosNum === null ? "text-slate-500" : acosIsHigh ? "text-red-400" : "text-emerald-400"}`}>
-            {acosNum !== null ? `${acosNum}%` : "N/A"}
+            {acosNum !== null ? <EditableNumber value={acosNum} onChange={onUpdate ? (v) => onUpdate({ ...data, currentAcos: v }) : undefined} className={`text-lg font-bold ${acosIsHigh ? "text-red-400" : "text-emerald-400"}`} suffix="%" /> : "N/A"}
           </p>
           <p className="text-xs text-slate-600">target: {targetNum !== null ? `${targetNum}%` : "N/A"}</p>
         </div>
         <div className="rounded-xl bg-slate-800/60 border border-slate-700/50 px-3 py-3 text-center">
           <p className="text-xs text-slate-500 mb-1">Wasted Spend (30d)</p>
           <p className={`text-lg font-bold ${wastedNum !== null ? "text-red-400" : "text-slate-500"}`}>
-            {wastedNum !== null ? formatDollars(wastedNum) : "N/A"}
+            {wastedNum !== null ? <EditableNumber value={wastedNum} onChange={onUpdate ? (v) => onUpdate({ ...data, wastedSpend30Days: v }) : undefined} className="text-lg font-bold text-red-400" prefix="$" /> : "N/A"}
           </p>
           <p className="text-xs text-slate-600">recoverable</p>
         </div>
         <div className="rounded-xl bg-slate-800/60 border border-slate-700/50 px-3 py-3 text-center">
           <p className="text-xs text-slate-500 mb-1">Low Performers</p>
           <p className={`text-lg font-bold ${lowPerfNum !== null ? "text-amber-400" : "text-slate-500"}`}>
-            {lowPerfNum !== null ? lowPerfNum : "N/A"}
+            {lowPerfNum !== null ? <EditableNumber value={lowPerfNum} onChange={onUpdate ? (v) => onUpdate({ ...data, lowPerformerCount: v }) : undefined} className="text-lg font-bold text-amber-400" /> : "N/A"}
           </p>
           <p className="text-xs text-slate-600">campaigns</p>
         </div>
@@ -369,7 +518,15 @@ function PpcAnalysisCard({ data }: { data: AnalysisResult["ppcAnalysis"] }) {
         { label: "Current ACoS", source: data.currentAcos_source },
         { label: "Wasted Spend", source: data.wastedSpend30Days_source },
         { label: "Low Performers", source: data.lowPerformerCount_source },
-      ]} />
+      ]} onDetailUpdate={onUpdate ? (label, newDetail) => {
+        const sourceKey = label === "Current ACoS" ? "currentAcos_source"
+          : label === "Wasted Spend" ? "wastedSpend30Days_source"
+          : "lowPerformerCount_source";
+        onUpdate({
+          ...data,
+          [sourceKey]: { ...data[sourceKey as keyof typeof data] as SourceInfo, detail: newDetail },
+        });
+      } : undefined} />
 
       {/* Weekly chart */}
       {hasWeekly && (
@@ -425,7 +582,11 @@ function PpcAnalysisCard({ data }: { data: AnalysisResult["ppcAnalysis"] }) {
 
       <div className="rounded-lg bg-red-500/10 border border-red-500/20 px-4 py-3">
         <p className="text-xs font-semibold text-red-400 mb-1">Key Finding</p>
-        <p className="text-sm text-slate-300 leading-relaxed">{data.keyFinding}</p>
+        <EditableText
+          value={data.keyFinding}
+          onChange={onUpdate ? (v) => onUpdate({ ...data, keyFinding: v }) : undefined}
+          className="text-sm text-slate-300 leading-relaxed"
+        />
       </div>
     </div>
   );
@@ -434,17 +595,21 @@ function PpcAnalysisCard({ data }: { data: AnalysisResult["ppcAnalysis"] }) {
 function HighLevelFindings({
   data,
   listingSource,
+  onPpcUpdate,
+  onListingUpdate,
 }: {
   data: AnalysisResult;
   listingSource?: SourceInfo;
+  onPpcUpdate?: (updated: AnalysisResult["ppcAnalysis"]) => void;
+  onListingUpdate?: (updated: AnalysisResult["listingAnalysis"]) => void;
 }) {
   return (
     <section className="space-y-3">
       <h3 className="text-lg font-semibold text-slate-100 mb-1">High-Level Findings</h3>
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-        <ListingAnalysisCard data={data.listingAnalysis} source={listingSource} />
-        <PpcAnalysisCard data={data.ppcAnalysis} />
+        <ListingAnalysisCard data={data.listingAnalysis} source={listingSource} onUpdate={onListingUpdate} />
+        <PpcAnalysisCard data={data.ppcAnalysis} onUpdate={onPpcUpdate} />
       </div>
     </section>
   );
@@ -556,16 +721,19 @@ export function GatedCta({ gated }: { gated: AnalysisResult["gatedInsights"] }) 
 
 // ── Main Component ────────────────────────────────────────────────────────────
 
-export function AuditResults({ data }: AuditResultsProps) {
+export function AuditResults({ data, onUpdate }: AuditResultsProps) {
   return (
     <div className="space-y-10">
       <PerformanceSnapshot
         data={data.performanceSnapshot}
         source={data.performanceSnapshot_source}
+        onUpdate={onUpdate ? (snap) => onUpdate({ ...data, performanceSnapshot: snap }) : undefined}
       />
       <HighLevelFindings
         data={data}
         listingSource={data.listingAnalysis_source}
+        onPpcUpdate={onUpdate ? (ppc) => onUpdate({ ...data, ppcAnalysis: ppc }) : undefined}
+        onListingUpdate={onUpdate ? (listing) => onUpdate({ ...data, listingAnalysis: listing }) : undefined}
       />
       <TopOpportunities
         data={data.topOpportunities}

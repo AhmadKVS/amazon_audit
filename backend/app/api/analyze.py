@@ -407,19 +407,45 @@ def calculate_performance_snapshot(ppc: dict) -> dict:
     snapshot = {
         "revenueOpportunity": {
             "percentageIncrease": rev_pct,
+            "percentageFormula": f"${total_rev_impact:,} / ${monthly_sales:,.0f} × 100 = {rev_pct}%",
             "breakdown": [
-                {"label": "PPC Optimization & Waste Reduction", "monthlyImpact": rev_waste_recovery},
-                {"label": f"ACOS Optimization ({current_acos}% → {target_acos}%)", "monthlyImpact": rev_acos_opt},
-                {"label": "Campaign Structure Enhancement", "monthlyImpact": rev_campaign_eff},
+                {
+                    "label": "PPC Optimization & Waste Reduction",
+                    "monthlyImpact": rev_waste_recovery,
+                    "formula": f"${wasted_30d:,} wasted × 50% recovery × {sales_per_dollar:.2f} sales/$ = ${rev_waste_recovery:,}",
+                },
+                {
+                    "label": f"ACOS Optimization ({current_acos}% → {target_acos}%)",
+                    "monthlyImpact": rev_acos_opt,
+                    "formula": f"${monthly_sales:,.0f}/mo × {excess_acos_pct:.1%} excess ACOS = ${rev_acos_opt:,}",
+                },
+                {
+                    "label": "Campaign Structure Enhancement",
+                    "monthlyImpact": rev_campaign_eff,
+                    "formula": f"${high_acos_monthly:,}/mo high-ACOS spend × 30% recapture × {sales_per_dollar:.2f} sales/$ = ${rev_campaign_eff:,}",
+                },
             ],
             "totalMonthlyImpact": total_rev_impact,
         },
         "profitabilityOpportunity": {
             "percentageIncrease": prof_pct,
+            "percentageFormula": f"${total_prof_savings:,} / ${monthly_spend:,.0f} × 100 = {prof_pct}%",
             "breakdown": [
-                {"label": "Eliminate Wasted Ad Spend", "monthlySavings": prof_waste},
-                {"label": f"ACOS Optimization ({current_acos}% to {target_acos}%)", "monthlySavings": prof_acos},
-                {"label": "Campaign Efficiency Improvements", "monthlySavings": prof_campaign},
+                {
+                    "label": "Eliminate Wasted Ad Spend",
+                    "monthlySavings": prof_waste,
+                    "formula": f"${prof_waste:,}/mo wasted on zero-conversion & high-ACOS terms",
+                },
+                {
+                    "label": f"ACOS Optimization ({current_acos}% to {target_acos}%)",
+                    "monthlySavings": prof_acos,
+                    "formula": f"${monthly_spend:,.0f}/mo × ({current_acos}% − {target_acos}%) / {current_acos}% = ${prof_acos:,}",
+                },
+                {
+                    "label": "Campaign Efficiency Improvements",
+                    "monthlySavings": prof_campaign,
+                    "formula": f"${prof_campaign:,}/mo spent on campaigns with ACOS > 45%",
+                },
             ],
             "totalMonthlySavings": total_prof_savings,
         },
