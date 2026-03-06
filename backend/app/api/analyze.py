@@ -10,6 +10,7 @@ Flow:
     4. Call Claude API with system prompt (Claude uses pre-calculated PPC metrics).
     5. Parse JSON response, override PPC fields with Python-calculated values.
 """
+import asyncio
 import base64
 import json
 import re
@@ -34,7 +35,8 @@ from app.services.csv_parser import (
 router = APIRouter()
 
 # Maximum characters of combined file content sent to Claude
-_MAX_CONTEXT_CHARS = 80_000
+# ~4 chars per token → 30k chars ≈ 7,500 tokens (fits within 10k TPM rate limit)
+_MAX_CONTEXT_CHARS = 30_000
 
 
 def _source(file: str, method: str, detail: str = "") -> dict:
@@ -635,28 +637,35 @@ async def analyze_audit(
 
     # ── 3. Call Claude API ─────────────────────────────────────────────────
     print(f"[STEP 3] Sending {len(combined)} chars to Claude API...")
-    try:
-        client = anthropic.Anthropic(api_key=settings.ANTHROPIC_API_KEY, timeout=120.0)
-
-        message = client.messages.create(
-            model="claude-sonnet-4-20250514",
-            max_tokens=6000,
-            system=_SYSTEM_PROMPT,
-            messages=[{"role": "user", "content": combined}],
-        )
-
-        response_text = message.content[0].text if message.content else ""
-
-    except anthropic.APIStatusError as exc:
-        print(f"[analyze] Anthropic API error {exc.status_code}: {exc.message}")
-        raise HTTPException(502, f"Anthropic API error {exc.status_code}: {exc.message}")
-    except anthropic.APITimeoutError:
-        raise HTTPException(504, "Claude API timed out — please try again")
-    except anthropic.APIConnectionError as exc:
-        raise HTTPException(502, f"Could not reach Claude API: {exc}")
-    except Exception as exc:
-        print(f"[analyze] Unexpected error calling Claude: {exc}")
-        raise HTTPException(500, f"AI analysis failed: {str(exc)}")
+    client = anthropic.Anthropic(api_key=settings.ANTHROPIC_API_KEY, timeout=120.0)
+    response_text = ""
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            message = client.messages.create(
+                model="claude-sonnet-4-20250514",
+                max_tokens=6000,
+                system=_SYSTEM_PROMPT,
+                messages=[{"role": "user", "content": combined}],
+            )
+            response_text = message.content[0].text if message.content else ""
+            break  # success
+        except anthropic.RateLimitError as exc:
+            wait = 65  # wait just over 1 minute for rate limit window to reset
+            print(f"[analyze] Rate limited (attempt {attempt + 1}/{max_retries}), retrying in {wait}s...")
+            if attempt == max_retries - 1:
+                raise HTTPException(429, f"Claude API rate limit exceeded after {max_retries} retries. Please try again in a minute.")
+            await asyncio.sleep(wait)
+        except anthropic.APIStatusError as exc:
+            print(f"[analyze] Anthropic API error {exc.status_code}: {exc.message}")
+            raise HTTPException(502, f"Anthropic API error {exc.status_code}: {exc.message}")
+        except anthropic.APITimeoutError:
+            raise HTTPException(504, "Claude API timed out — please try again")
+        except anthropic.APIConnectionError as exc:
+            raise HTTPException(502, f"Could not reach Claude API: {exc}")
+        except Exception as exc:
+            print(f"[analyze] Unexpected error calling Claude: {exc}")
+            raise HTTPException(500, f"AI analysis failed: {str(exc)}")
 
     # ── 4. Parse the JSON response ─────────────────────────────────────────
     try:

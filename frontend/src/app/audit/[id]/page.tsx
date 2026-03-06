@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { useParams, useSearchParams, useRouter } from "next/navigation";
 import Link from "next/link";
 import {
@@ -335,6 +335,7 @@ function AuditResultsContent() {
   const [deepAnalysis, setDeepAnalysis] = useState<AnalysisResult | null>(null);
   const [deepAnalysisLoading, setDeepAnalysisLoading] = useState(false);
   const [deepAnalysisError, setDeepAnalysisError] = useState<string | null>(null);
+  const deepAnalysisRestoredRef = useRef(false);
 
   useEffect(() => {
     if (!isAuthenticated()) { router.replace("/login"); return; }
@@ -432,6 +433,7 @@ function AuditResultsContent() {
 
       // Restore deep analysis from saved data (skip re-fetching from Claude)
       if (d.deep_analysis && typeof d.deep_analysis === "object" && Object.keys(d.deep_analysis).length > 0) {
+        deepAnalysisRestoredRef.current = true;
         setDeepAnalysis(d.deep_analysis as AnalysisResult);
         setDeepAnalysisLoading(false);
       }
@@ -614,8 +616,10 @@ function AuditResultsContent() {
 
   // ── Deep analysis: call Claude-powered /api/analyze when we have file data ──
   useEffect(() => {
+    // Skip if already restored from DynamoDB/cache, already loaded, or loading
+    if (deepAnalysisRestoredRef.current || deepAnalysis || deepAnalysisLoading) return;
     // Need either an S3 key or inline base64 file data
-    if ((!csvData?.s3_key && !csvData?.file_data) || deepAnalysis || deepAnalysisLoading) return;
+    if (!csvData?.s3_key && !csvData?.file_data) return;
 
     setDeepAnalysisLoading(true);
 

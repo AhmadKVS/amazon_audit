@@ -37,21 +37,25 @@ export default function LoginPage() {
         return;
       }
       saveTokens(data);
-      // Pre-fetch audit list + all individual reports in background
+      // Pre-fetch audit list + all reports in one batch call
       fetchWithAuth("/api/audit/list")
         .then((r) => r.ok ? r.json() : null)
         .then((d) => {
-          if (!d?.audits) return;
+          if (!d?.audits?.length) return;
           setCachedAuditList(d.audits);
-          // Fetch and cache each audit report
-          for (const audit of d.audits) {
-            fetchWithAuth(`/api/audit/${audit.audit_id}`)
-              .then((r) => r.ok ? r.json() : null)
-              .then((report) => {
-                if (report?.brand_analysis) setCachedReport(audit.audit_id, report);
-              })
-              .catch(() => {});
-          }
+          const ids = d.audits.map((a: { audit_id: string }) => a.audit_id);
+          fetchWithAuth("/api/audit/batch", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ audit_ids: ids }),
+          })
+            .then((r) => r.ok ? r.json() : null)
+            .then((batch) => {
+              for (const report of batch?.audits ?? []) {
+                if (report?.brand_analysis) setCachedReport(report.audit_id, report);
+              }
+            })
+            .catch(() => {});
         })
         .catch(() => {});
       router.replace("/");
