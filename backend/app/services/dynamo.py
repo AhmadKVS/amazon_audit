@@ -96,6 +96,7 @@ def save_audit(user_id: str, audit_id: str, data: dict) -> None:
         "citations":        data.get("citations", []),
         "s3_key":           data.get("s3_key", ""),
         "deep_analysis":    data.get("deep_analysis", {}),
+        "email":            data.get("email", ""),
     })
     try:
         table.put_item(Item=item)
@@ -189,6 +190,56 @@ def list_audits(user_id: str) -> list[dict]:
     print(f"[dynamo] list_audits -> {len(items)} items found")
     items.sort(key=lambda x: x.get("created_at", ""), reverse=True)
     return [_to_native(item) for item in items]
+
+
+def scan_all_audits(limit: int = 100, last_key: dict | None = None) -> tuple[list[dict], dict | None]:
+    """Paginated scan of all audits (admin use only). Returns (items, next_key)."""
+    table = _resource().Table(settings.DYNAMODB_TABLE)
+    kwargs = {
+        "ProjectionExpression": "user_id, audit_id, brand_name, niche, marketplace, report_type, audit_purpose, created_at, email",
+        "Limit": limit,
+    }
+    # Filter out share token rows
+    kwargs["FilterExpression"] = boto3.dynamodb.conditions.Attr("user_id").ne("share")
+    if last_key:
+        kwargs["ExclusiveStartKey"] = last_key
+    resp = table.scan(**kwargs)
+    items = resp.get("Items", [])
+    items.sort(key=lambda x: x.get("created_at", ""), reverse=True)
+    next_key = resp.get("LastEvaluatedKey")
+    return [_to_native(item) for item in items], next_key
+
+
+def admin_update_audit(user_id: str, audit_id: str, updates: dict) -> None:
+    """Update multiple fields on an existing audit record (admin use)."""
+    print(f"[dynamo] admin_update_audit user_id={user_id!r} audit_id={audit_id!r} fields={list(updates.keys())}")
+    table = _resource().Table(settings.DYNAMODB_TABLE)
+
+    expr_parts = []
+    attr_names = {}
+    attr_values = {}
+    for i, (key, value) in enumerate(updates.items()):
+        placeholder_name = f"#f{i}"
+        placeholder_value = f":v{i}"
+        expr_parts.append(f"{placeholder_name} = {placeholder_value}")
+        attr_names[placeholder_name] = key
+        sanitized = _sanitize({"v": value})["v"] if value else value
+        attr_values[placeholder_value] = sanitized
+
+    if not expr_parts:
+        return
+
+    try:
+        table.update_item(
+            Key={"user_id": user_id, "audit_id": audit_id},
+            UpdateExpression="SET " + ", ".join(expr_parts),
+            ExpressionAttributeNames=attr_names,
+            ExpressionAttributeValues=attr_values,
+        )
+        print(f"[dynamo] admin_update_audit SUCCESS")
+    except Exception as e:
+        print(f"[dynamo] admin_update_audit FAILED: {e}")
+        raise
 
 
 # ── Share tokens ────────────────────────────────────────────────────────────

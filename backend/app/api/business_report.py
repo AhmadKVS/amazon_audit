@@ -14,7 +14,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 from app.core.config import settings
-from app.core.dependencies import get_current_user
+from app.core.dependencies import get_current_user, check_rate_limit
 from app.services.dynamo import save_audit as dynamo_save, get_audit as dynamo_get
 
 router = APIRouter()
@@ -306,7 +306,7 @@ async def _ai_synthesize(
 # ── Endpoints ─────────────────────────────────────────────────────────────
 
 @router.post("/analyze")
-async def analyze(req: BusinessReportRequest, user: str = Depends(get_current_user)):
+async def analyze(req: BusinessReportRequest, user: str = Depends(get_current_user), _rl=Depends(check_rate_limit)):
     """
     Generate a full business report: diagnostics + AI-powered analysis.
 

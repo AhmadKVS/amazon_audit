@@ -15,7 +15,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 from app.core.config import settings
-from app.core.dependencies import get_current_user
+from app.core.dependencies import get_current_user, check_rate_limit
 from app.services.dynamo import save_audit as dynamo_save, list_audits as dynamo_list, get_audit as dynamo_get, delete_audit as dynamo_delete, batch_get_audits as dynamo_batch_get, update_audit_field as dynamo_update_field
 
 router = APIRouter()
@@ -234,7 +234,7 @@ async def _synthesize(client: httpx.AsyncClient, research_context: str, req: Ana
 # ── Endpoint ───────────────────────────────────────────────────────────────
 
 @router.post("/analyze")
-async def analyze(req: AnalyzeRequest, user: str = Depends(get_current_user)):
+async def analyze(req: AnalyzeRequest, user: str = Depends(get_current_user), _rl=Depends(check_rate_limit)):
     """
     Full AI audit: multi-query Perplexity search + synthesis.
 
@@ -359,6 +359,7 @@ class SaveAuditRequest(BaseModel):
     citations:        list = []
     s3_key:           str  = ""
     deep_analysis:    dict = {}
+    email:            str  = ""
 
 
 @router.post("/save")

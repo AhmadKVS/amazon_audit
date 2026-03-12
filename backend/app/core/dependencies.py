@@ -1,56 +1,73 @@
 """
-FastAPI dependencies — JWT auth via AWS Cognito
+FastAPI dependencies — user identity via Store URL + IP address.
 """
-import boto3
-from botocore.exceptions import ClientError
-from fastapi import Depends, HTTPException, Header
-from functools import lru_cache
+import hashlib
 
-from app.core.config import settings
+from fastapi import Depends, Header, HTTPException, Request
 
-
-def _cognito():
-    return boto3.client(
-        "cognito-idp",
-        region_name=settings.AWS_REGION,
-        aws_access_key_id=settings.AWS_ACCESS_KEY_ID or None,
-        aws_secret_access_key=settings.AWS_SECRET_ACCESS_KEY or None,
-    )
+from app.services.dynamo import list_audits
 
 
-async def get_current_user(authorization: str = Header(default=None)) -> str:
+def get_client_ip(request: Request) -> str:
+    """Extract client IP from X-Forwarded-For (first IP) or request.client."""
+    forwarded = request.headers.get("x-forwarded-for", "")
+    if forwarded:
+        return forwarded.split(",")[0].strip()
+    if request.client:
+        return request.client.host
+    return "unknown"
+
+
+def normalize_store_url(raw: str) -> str:
+    """Normalize an Amazon store URL for consistent hashing."""
+    url = raw.strip().lower()
+    for prefix in ("https://", "http://"):
+        if url.startswith(prefix):
+            url = url[len(prefix):]
+    if url.startswith("www."):
+        url = url[4:]
+    return url.rstrip("/")
+
+
+async def get_current_user(
+    request: Request,
+    x_store_url: str = Header(default=""),
+) -> str:
     """
-    Verify the Cognito access token from the Authorization header.
-    Returns the username (email) of the authenticated user.
-    Raises 401 if missing or invalid.
+    Derive a deterministic user_id from the Store URL + client IP.
+    Returns a 64-char hex SHA-256 hash.
     """
-    if not settings.COGNITO_CLIENT_ID:
-        # Auth not configured — allow all requests (dev mode)
-        return "dev-user"
+    ip = get_client_ip(request)
+    store = normalize_store_url(x_store_url)
+    if store:
+        identity = f"{store}|{ip}"
+    else:
+        identity = f"|{ip}"
+    return hashlib.sha256(identity.encode()).hexdigest()
 
-    if not authorization or not authorization.startswith("Bearer "):
+
+async def check_rate_limit(
+    request: Request,
+    x_store_url: str = Header(default=""),
+) -> None:
+    """
+    Enforce a maximum of 10 audit analyses per (store_url, IP) identity.
+    Only applied to AI-intensive analyze endpoints.
+    """
+    ip = get_client_ip(request)
+    store = normalize_store_url(x_store_url)
+    if store:
+        identity = f"{store}|{ip}"
+    else:
+        identity = f"|{ip}"
+    user_id = hashlib.sha256(identity.encode()).hexdigest()
+
+    audits = list_audits(user_id)
+    if len(audits) >= 10:
         raise HTTPException(
-            status_code=401,
-            detail="Not authenticated",
-            headers={"WWW-Authenticate": "Bearer"},
+            status_code=429,
+            detail="Rate limit reached: maximum 10 audits per store. Contact support for more.",
         )
-
-    token = authorization.removeprefix("Bearer ").strip()
-
-    try:
-        user = _cognito().get_user(AccessToken=token)
-        return user["Username"]
-    except ClientError as e:
-        code = e.response["Error"]["Code"]
-        if code in ("NotAuthorizedException", "UserNotFoundException", "TokenExpiredException"):
-            raise HTTPException(
-                status_code=401,
-                detail="Invalid or expired token — please sign in again",
-                headers={"WWW-Authenticate": "Bearer"},
-            )
-        raise HTTPException(status_code=401, detail=f"Auth check failed: {code}")
-    except Exception as e:
-        raise HTTPException(status_code=401, detail=f"Auth unavailable: {str(e)}")
 
 
 # Shorthand for use in route signatures

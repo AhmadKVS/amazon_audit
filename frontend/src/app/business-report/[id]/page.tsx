@@ -1,9 +1,9 @@
 "use client";
 
 import React, { useEffect, useState } from "react";
-import { useParams, useSearchParams, useRouter } from "next/navigation";
+import { useParams, useSearchParams } from "next/navigation";
 import Link from "next/link";
-import { fetchWithAuth, isAuthenticated } from "@/lib/auth";
+import { fetchWithAuth, setStoreUrl as persistStoreUrl } from "@/lib/auth";
 import DiagnosticCard from "@/components/DiagnosticCard";
 import HealthScoreGauge from "@/components/HealthScoreGauge";
 import BeforeAfterPanel from "@/components/BeforeAfterPanel";
@@ -150,7 +150,6 @@ function ShareButton({ auditId, disabled }: { auditId: string; disabled: boolean
 function BusinessReportContent() {
   const params       = useParams();
   const searchParams = useSearchParams();
-  const router       = useRouter();
 
   const auditId      = params.id as string;
   const brandName    = searchParams.get("brand_name") ?? "";
@@ -159,6 +158,7 @@ function BusinessReportContent() {
   const auditPurpose = searchParams.get("audit_purpose") ?? "";
   const notes        = searchParams.get("notes") ?? "";
   const isSaved      = searchParams.get("saved") === "true";
+  const storeUrlParam = searchParams.get("store_url") ?? "";
 
   const [report, setReport]           = useState<ReportData | null>(null);
   const [loading, setLoading]         = useState(true);
@@ -166,7 +166,7 @@ function BusinessReportContent() {
   const [asinCount, setAsinCount]     = useState(0);
 
   useEffect(() => {
-    if (!isAuthenticated()) { router.replace("/login"); return; }
+    if (storeUrlParam) persistStoreUrl(storeUrlParam);
 
     // Load ASIN metrics from sessionStorage
     const stored = sessionStorage.getItem(`business_report_${auditId}`);

@@ -31,7 +31,18 @@ class Settings(BaseSettings):
 
     # Anthropic Claude (AI analysis)
     ANTHROPIC_API_KEY: str = ""
-    
+
+    # Rainforest API (real-time Amazon product data)
+    RAINFOREST_API_KEY: str = ""
+
+    # AWS SES email sending
+    SES_FROM_EMAIL: str = ""
+
+    # Admin panel
+    ADMIN_EMAIL: str = ""
+    ADMIN_PASSWORD: str = ""
+    ADMIN_JWT_SECRET: str = ""
+
     class Config:
         env_file = str(_ENV_FILE)
         extra = "ignore"

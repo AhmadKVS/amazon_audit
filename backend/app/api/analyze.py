@@ -22,7 +22,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 from app.core.config import settings
-from app.core.dependencies import get_current_user
+from app.core.dependencies import get_current_user, check_rate_limit
 from app.services.s3_storage import download_from_s3
 from app.services.csv_parser import (
     parse_csv,
@@ -59,6 +59,8 @@ class AnalyzeRequest(BaseModel):
     brand_name: str = ""
     niche: str = ""
     marketplace: str = "Amazon US"
+    existing_scorecard: dict = {}  # Scorecard data from store lookup (provides brand/ASIN context)
+    requested_sections: list[str] = []  # e.g. ["revenueGapReport"] or ["adEfficiencySignal"]
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────
@@ -206,9 +208,11 @@ def calculate_ppc_metrics(df: "pd.DataFrame") -> Optional[dict]:
     col_orders = _find_col(df, ["orders"]) or _find_col(df, ["purchases"])
     col_campaign = _find_col(df, ["campaign"])
     col_clicks = _find_col(df, ["clicks"])
+    col_search_term = _find_col(df, ["customer", "search", "term"]) or _find_col(df, ["targeting"])
 
     print(f"[PPC] Column mapping: spend={col_spend}, sales={col_sales}, "
-          f"orders={col_orders}, campaign={col_campaign}, clicks={col_clicks}")
+          f"orders={col_orders}, campaign={col_campaign}, clicks={col_clicks}, "
+          f"search_term={col_search_term}")
 
     if not col_spend or not col_sales:
         print(f"[PPC] Missing required columns (spend={col_spend}, sales={col_sales}) — skipping")
@@ -221,6 +225,8 @@ def calculate_ppc_metrics(df: "pd.DataFrame") -> Optional[dict]:
         pd.to_numeric(df[col_orders], errors="coerce").fillna(0)
         if col_orders else 0
     )
+    if col_clicks:
+        df["_clicks"] = pd.to_numeric(df[col_clicks], errors="coerce").fillna(0)
 
     total_spend = df["_spend"].sum()
     total_sales = df["_sales"].sum()
@@ -260,6 +266,22 @@ def calculate_ppc_metrics(df: "pd.DataFrame") -> Optional[dict]:
 
     # ── Zero-conversion waste ──
     zero_waste = df[(df["_orders"] == 0) & (df["_spend"] > 0)]["_spend"].sum()
+
+    # ── Top wasted search terms (zero orders, sorted by spend) ──
+    top_wasted_terms: list[dict] = []
+    if col_search_term:
+        zero_order_rows = df[(df["_orders"] == 0) & (df["_spend"] > 1.0)].copy()
+        zero_order_rows = zero_order_rows.sort_values("_spend", ascending=False)
+        for _, row in zero_order_rows.head(10).iterrows():
+            term = row.get(col_search_term)
+            if pd.notna(term) and str(term).strip():
+                top_wasted_terms.append({
+                    "term": str(term).strip(),
+                    "spend": round(float(row["_spend"]), 2),
+                    "clicks": int(row.get("_clicks", 0)) if "_clicks" in row.index else 0,
+                    "orders": 0,
+                })
+        print(f"[PPC] Top wasted terms: {len(top_wasted_terms)} found")
 
     # ── High ACOS waste + low performer count (campaign-level) ──
     high_acos_waste = 0.0
@@ -339,6 +361,7 @@ def calculate_ppc_metrics(df: "pd.DataFrame") -> Optional[dict]:
         "lowPerformerCount": low_performer_count,
         "targetAcos": 35,
         "weeklyData": weekly_data,
+        "topWastedTerms": top_wasted_terms,
         "_meta": {
             "total_spend": round(total_spend, 2),
             "total_sales": round(total_sales, 2),
@@ -461,96 +484,283 @@ def calculate_performance_snapshot(ppc: dict) -> dict:
     return snapshot
 
 
+def calculate_revenue_gap(df: "pd.DataFrame") -> Optional[dict]:
+    """
+    Calculate revenue gap metrics deterministically from a Business Report CSV.
+
+    Returns a dict matching the revenueGapReport schema with per-ASIN conversion
+    rate comparisons, flagged ASINs, and total monthly revenue gap.
+    Returns None if the DataFrame lacks required columns.
+    """
+    df = df.copy()
+    df.columns = df.columns.str.strip()
+
+    # Column detection for Business Report
+    col_asin = _find_col(df, ["asin"]) or _find_col(df, ["child"])
+    col_title = _find_col(df, ["title"]) or _find_col(df, ["product"])
+    col_sessions = _find_col(df, ["sessions"]) or _find_col(df, ["session"])
+    col_cr = (_find_col(df, ["unit", "session", "percentage"])
+              or _find_col(df, ["conversion"])
+              or _find_col(df, ["buy", "box", "percentage"]))
+    col_revenue = (_find_col(df, ["ordered", "product", "sales"])
+                   or _find_col(df, ["revenue"])
+                   or _find_col(df, ["sales"]))
+    col_units = _find_col(df, ["units", "ordered"]) or _find_col(df, ["units"])
+    col_buybox = _find_col(df, ["buy", "box", "percentage"])
+
+    print(f"[RevGap] Column mapping: asin={col_asin}, title={col_title}, "
+          f"sessions={col_sessions}, cr={col_cr}, revenue={col_revenue}, "
+          f"units={col_units}, buybox={col_buybox}")
+
+    if not col_sessions or not col_revenue:
+        print("[RevGap] Missing required columns — skipping")
+        return None
+
+    # Clean numeric data
+    df["_sessions"] = pd.to_numeric(
+        df[col_sessions].astype(str).str.replace(",", "").str.replace("%", ""),
+        errors="coerce",
+    ).fillna(0)
+    df["_revenue"] = df[col_revenue].apply(_clean_currency) if col_revenue else 0
+
+    if col_cr:
+        df["_cr"] = pd.to_numeric(
+            df[col_cr].astype(str).str.replace("%", "").str.replace(",", ""),
+            errors="coerce",
+        ).fillna(0)
+    else:
+        # Calculate CR from units / sessions
+        if col_units:
+            df["_units"] = pd.to_numeric(
+                df[col_units].astype(str).str.replace(",", ""),
+                errors="coerce",
+            ).fillna(0)
+            df["_cr"] = (df["_units"] / df["_sessions"].replace(0, float("nan")) * 100).fillna(0)
+        else:
+            df["_cr"] = 0
+
+    if col_buybox:
+        df["_buybox"] = pd.to_numeric(
+            df[col_buybox].astype(str).str.replace("%", "").str.replace(",", ""),
+            errors="coerce",
+        ).fillna(0)
+
+    # Filter to rows with meaningful data
+    df = df[df["_sessions"] > 0].copy()
+    if df.empty:
+        print("[RevGap] No rows with sessions > 0 — skipping")
+        return None
+
+    # Amazon benchmark conversion rate (typical range 12-15%)
+    benchmark_cr = 12.5
+
+    # Build per-ASIN data
+    top_asins = []
+    flagged_asins = []
+    total_gap = 0
+
+    # Sort by revenue descending
+    df = df.sort_values("_revenue", ascending=False)
+
+    for _, row in df.head(20).iterrows():
+        asin = str(row.get(col_asin, "")) if col_asin else ""
+        title = str(row.get(col_title, "")) if col_title else ""
+        sessions = float(row["_sessions"])
+        cr = float(row["_cr"])
+        revenue = float(row["_revenue"])
+
+        # Calculate gap: if CR is below benchmark
+        if sessions > 0 and cr < benchmark_cr and cr > 0:
+            avg_order_val = revenue / (sessions * cr / 100) if (sessions * cr / 100) > 0 else 0
+            monthly_gap = round(sessions * (benchmark_cr - cr) / 100 * avg_order_val)
+        else:
+            monthly_gap = 0
+
+        total_gap += monthly_gap
+
+        asin_data = {
+            "asin": asin,
+            "title": title[:80] if title else "",
+            "sessions": int(sessions),
+            "conversionRate": round(cr, 1),
+            "benchmarkCR": benchmark_cr,
+            "revenue": round(revenue, 2),
+            "monthlyGap": monthly_gap,
+        }
+        top_asins.append(asin_data)
+
+        # Flag ASINs with high sessions but low conversion
+        if sessions > 100 and cr < benchmark_cr * 0.6:
+            flagged_asins.append({
+                "asin": asin,
+                "title": title[:80] if title else "",
+                "sessions": int(sessions),
+                "conversionRate": round(cr, 1),
+                "monthlyDollarGap": monthly_gap,
+                "reason": f"High sessions ({int(sessions):,}) but low conversion ({cr:.1f}% vs {benchmark_cr}% benchmark)",
+            })
+
+    # Revenue concentration risk
+    total_revenue = df["_revenue"].sum()
+    top3_revenue = df["_revenue"].head(3).sum() if len(df) >= 3 else total_revenue
+    concentration_pct = round(top3_revenue / total_revenue * 100, 1) if total_revenue > 0 else 0
+
+    # Buy Box metrics
+    buybox_metrics = []
+    if col_buybox:
+        for _, row in df.head(10).iterrows():
+            bb = float(row.get("_buybox", 0))
+            if bb > 0:
+                buybox_metrics.append({
+                    "asin": str(row.get(col_asin, "")) if col_asin else "",
+                    "buyBoxPercentage": round(bb, 1),
+                    "status": "good" if bb >= 90 else "warning" if bb >= 70 else "critical",
+                })
+
+    key_finding = (
+        f"Estimated ${total_gap:,}/month revenue gap across {len(top_asins)} ASINs. "
+        + (f"Revenue concentration risk: top 3 ASINs account for {concentration_pct}% of revenue. "
+           if concentration_pct > 70 else "")
+        + (f"{len(flagged_asins)} ASIN(s) flagged for high sessions with low conversion."
+           if flagged_asins else "")
+    )
+
+    print(f"[RevGap] Total gap: ${total_gap:,}/mo, {len(flagged_asins)} flagged, "
+          f"concentration={concentration_pct}%")
+
+    return {
+        "topAsins": top_asins[:10],
+        "flaggedAsins": flagged_asins[:5],
+        "buyBoxMetrics": buybox_metrics[:5],
+        "totalMonthlyRevenueGap": total_gap,
+        "revenueConcentration": concentration_pct,
+        "keyFinding": key_finding,
+    }
+
+
 _SYSTEM_PROMPT = """\
 You are an expert Amazon seller consultant specializing in revenue growth and profitability optimization.
 You will receive data exports from an Amazon seller's account (Business Reports, Advertising Reports, Search Terms Reports, etc.).
 Your task is to analyze the data and return a single JSON object — no markdown, no explanations, no code fences, ONLY valid JSON.
 
-The JSON must have EXACTLY these top-level keys:
+The JSON must have ALL of the following top-level keys. You MUST include BOTH the legacy keys AND the new 4-layer keys:
+
+=== LEGACY KEYS (required for backward compatibility) ===
 
 {
   "performanceSnapshot": {
     "revenueOpportunity": {
-      "percentageIncrease": <integer — estimated % revenue increase if top actions are taken>,
-      "breakdown": [
-        {"label": "<action category>", "monthlyImpact": <integer USD>},
-        ...
-      ],
+      "percentageIncrease": <integer>,
+      "breakdown": [{"label": "<category>", "monthlyImpact": <integer USD>}],
       "totalMonthlyImpact": <integer USD>
     },
     "profitabilityOpportunity": {
-      "percentageIncrease": <integer — estimated % margin improvement>,
-      "breakdown": [
-        {"label": "<action category>", "monthlySavings": <integer USD>},
-        ...
-      ],
+      "percentageIncrease": <integer>,
+      "breakdown": [{"label": "<category>", "monthlySavings": <integer USD>}],
       "totalMonthlySavings": <integer USD>
     }
   },
   "listingAnalysis": {
     "overallScore": <integer 0-100>,
     "metrics": [
-      {"label": "Title Optimization",       "score": <0-100>, "status": "good"|"warning"|"critical"},
-      {"label": "Backend Keywords",          "score": <0-100>, "status": "good"|"warning"|"critical"},
-      {"label": "Image Quality",             "score": <0-100>, "status": "good"|"warning"|"critical"},
-      {"label": "A+ Content",                "score": <0-100>, "status": "good"|"warning"|"critical"},
-      {"label": "Price Competitiveness",     "score": <0-100>, "status": "good"|"warning"|"critical"}
+      {"label": "Title Optimization", "score": <0-100>, "status": "good"|"warning"|"critical"},
+      {"label": "Backend Keywords", "score": <0-100>, "status": "good"|"warning"|"critical"},
+      {"label": "Image Quality", "score": <0-100>, "status": "good"|"warning"|"critical"},
+      {"label": "A+ Content", "score": <0-100>, "status": "good"|"warning"|"critical"},
+      {"label": "Price Competitiveness", "score": <0-100>, "status": "good"|"warning"|"critical"}
     ],
-    "keyFinding": "<1-2 sentence summary of the most critical listing issue>"
+    "keyFinding": "<1-2 sentence summary>"
   },
   "ppcAnalysis": {
     "currentAcos": <float or "N/A">,
-    "currentAcos_source": {"file": "<filename>", "method": "<how calculated>", "detail": "<show your math>"},
+    "currentAcos_source": {"file": "<filename>", "method": "<how>", "detail": "<math>"},
     "targetAcos": <float or "N/A">,
     "targetAcos_source": {"file": "<filename>", "method": "AI recommendation", "detail": "<reasoning>"},
     "wastedSpend30Days": <integer or "N/A">,
-    "wastedSpend30Days_source": {"file": "<filename>", "method": "<how calculated>", "detail": "<show your math>"},
+    "wastedSpend30Days_source": {"file": "<filename>", "method": "<how>", "detail": "<math>"},
     "lowPerformerCount": <integer or "N/A">,
-    "lowPerformerCount_source": {"file": "<filename>", "method": "<how calculated>", "detail": "<show your math>"},
-    "weeklyData": [
-      {"week": "Week 1", "adSpend": <integer>, "sales": <integer>},
-      {"week": "Week 2", "adSpend": <integer>, "sales": <integer>},
-      {"week": "Week 3", "adSpend": <integer>, "sales": <integer>},
-      {"week": "Week 4", "adSpend": <integer>, "sales": <integer>}
-    ] or "N/A",
-    "weeklyData_source": {"file": "<filename>", "method": "<how calculated>", "detail": "<show your math>"},
-    "keyFinding": "<1-2 sentence summary of the most critical PPC issue>"
+    "lowPerformerCount_source": {"file": "<filename>", "method": "<how>", "detail": "<math>"},
+    "weeklyData": [{"week": "Week 1", "adSpend": <int>, "sales": <int>}, ...] or "N/A",
+    "weeklyData_source": {"file": "<filename>", "method": "<how>", "detail": "<math>"},
+    "keyFinding": "<1-2 sentence summary>"
   },
   "topOpportunities": [
-    {
-      "title": "<short opportunity title>",
-      "description": "<1-2 sentence description of the specific action>",
-      "impact": "High Impact"|"Medium Impact"|"Low Impact",
-      "potentialMonthlyGain": <integer USD>
-    },
-    ... (exactly 3 opportunities, ranked highest impact first)
+    {"title": "<short title>", "description": "<1-2 sentences>", "impact": "High Impact"|"Medium Impact"|"Low Impact", "potentialMonthlyGain": <integer USD>}
   ],
   "gatedInsights": {
-    "teaser": "<1-2 sentence tease mentioning additional hidden opportunities and total estimated value>",
-    "fullReportItems": [
-      "<item 1 — specific additional insight available in full report>",
-      "<item 2>",
-      "<item 3>",
-      "<item 4>",
-      "<item 5>"
+    "teaser": "<1-2 sentence tease>",
+    "fullReportItems": ["<item 1>", "<item 2>", "<item 3>", "<item 4>", "<item 5>"]
+  }
+}
+
+=== NEW 4-LAYER KEYS (Account Audit Report) ===
+
+{
+  "listingHealthSnapshot": {
+    "mainAsin": {"asin": "B0...", "title": "Product Name"},
+    "imageCount": {"count": <int>, "benchmark": 7, "status": "good"|"warning"|"critical"},
+    "aPlusContent": {"present": <bool>, "status": "good"|"warning"},
+    "brandRegistry": {"detected": <bool>, "status": "good"|"warning"},
+    "reviewRating": {"rating": <float>, "reviewCount": <int>, "categoryAvg": <float>, "status": "good"|"warning"|"critical"},
+    "keyFinding": "<summary sentence>"
+  },
+  "revenueGapReport": {
+    "topAsins": [
+      {"asin": "...", "title": "...", "sessions": <int>, "conversionRate": <float>, "benchmarkCR": <float>, "revenue": <int>, "monthlyGap": <int>}
+    ],
+    "flaggedAsins": [
+      {"asin": "...", "title": "...", "sessions": <int>, "conversionRate": <float>, "monthlyDollarGap": <int>, "reason": "..."}
+    ],
+    "buyBoxMetrics": [
+      {"asin": "...", "buyBoxPercentage": <int>, "status": "good"|"warning"|"critical"}
+    ],
+    "totalMonthlyRevenueGap": <int>,
+    "keyFinding": "<summary>"
+  },
+  "adEfficiencySignal": {
+    "totalSpend": <float>,
+    "adAttributedSales": <float>,
+    "currentAcos": <float>,
+    "acosBenchmark": {"low": 25, "high": 30},
+    "zeroOrderSpend": <float>,
+    "topWastedTerms": [
+      {"term": "...", "spend": <float>, "clicks": <int>, "orders": 0}
+    ],
+    "totalRecoverableAdSpend": <int>,
+    "keyFinding": "<summary>"
+  },
+  "compiledReport": {
+    "executiveSummary": "<3-4 sentence overview combining all layers>",
+    "totalMonthlyOpportunity": <int>,
+    "dataGaps": ["<missing file notice>"],
+    "topActions": [
+      {"title": "...", "description": "...", "impact": "High"|"Medium"|"Low", "estimatedMonthlyGain": <int>}
     ]
   }
 }
 
+=== INSTRUCTIONS ===
+
 PPC METRICS — PRE-CALCULATED:
-The PPC metrics (currentAcos, wastedSpend30Days, lowPerformerCount, targetAcos, weeklyData) have already been calculated by the backend Python engine and are provided at the top of the context under "PRE-CALCULATED METRICS". Use these exact values in your ppcAnalysis JSON. Do NOT recalculate them from the CSV text. If no pre-calculated metrics are provided, return "N/A" for all PPC fields.
+The PPC metrics (currentAcos, wastedSpend30Days, lowPerformerCount, targetAcos, weeklyData) and ad efficiency metrics have been calculated by the backend Python engine. Use these exact values in ppcAnalysis and adEfficiencySignal. Do NOT recalculate from CSV text. If no pre-calculated metrics are provided, return "N/A" for PPC fields and estimate adEfficiencySignal fields.
 
-For each PPC metric _source field, set method to "See calculation" and include the details from the pre-calculated section.
-
-Your role for PPC is analysis, recommendations, and insights — not arithmetic.
+For each PPC metric _source field, set method to "See calculation" and include details from the pre-calculated section.
 
 PERFORMANCE SNAPSHOT — PRE-CALCULATED:
-If a "PERFORMANCE SNAPSHOT (PRE-CALCULATED)" section is provided in the context, use those exact percentages, breakdown labels, and dollar amounts in your performanceSnapshot JSON. Do NOT estimate your own revenue or profitability numbers — they have been calculated deterministically from the CSV data. If no pre-calculated snapshot is provided, generate your best estimates based on the data.
+If a "PERFORMANCE SNAPSHOT (PRE-CALCULATED)" section is provided, use those exact values in performanceSnapshot. Do NOT estimate your own.
+
+4-LAYER RULES:
+- adEfficiencySignal PPC fields will be overridden by Python — focus on keyFinding and analysis.
+- revenueGapReport: derive from Business Report CSV if present (sessions, conversion rates, revenue per ASIN).
+- listingHealthSnapshot: estimate from available data. If no listing data, make reasonable estimates and flag in dataGaps.
+- dataGaps: explicitly list any missing files (e.g., "No Search Terms Report uploaded", "No Active Listings data"). Never use nulls or made-up estimates without flagging.
+- Every insight must name specifics: ASIN, dollar amount, percentage.
+- compiledReport.topActions: 3-5 prioritized actions with estimated monthly gains, ranked by impact.
 
 OTHER RULES:
 - Base ALL numeric estimates on the actual data provided.
 - "status" in listingAnalysis.metrics: score >= 75 = "good", 50-74 = "warning", < 50 = "critical".
-- topOpportunities must be ranked by potentialMonthlyGain descending.
+- topOpportunities must be ranked by potentialMonthlyGain descending, exactly 3 items.
 - Respond with ONLY the JSON object — no markdown, no code fences, no preamble.
 """
 
@@ -561,6 +771,7 @@ OTHER RULES:
 async def analyze_audit(
     request: AnalyzeRequest,
     user: str = Depends(get_current_user),
+    _rl=Depends(check_rate_limit),
 ):
     """
     Full AI audit using Claude API.
@@ -737,7 +948,22 @@ async def analyze_audit(
             "=== END PERFORMANCE SNAPSHOT ===\n\n"
         )
 
-    # ── 2b. Build combined context ─────────────────────────────────────────
+    # ── 2b. Run deterministic Revenue Gap calculations ────────────────────
+    python_revenue_gap: Optional[dict] = None
+    rev_gap_source_file = ""
+    for label, df in parsed_dfs:
+        try:
+            result_rg = calculate_revenue_gap(df.copy())
+            if result_rg:
+                python_revenue_gap = result_rg
+                rev_gap_source_file = label
+                print(f"[RevGap] Python calc success from '{label}': "
+                      f"gap=${result_rg['totalMonthlyRevenueGap']:,}/mo")
+                break
+        except Exception as exc:
+            print(f"[RevGap] calculate_revenue_gap failed for '{label}': {exc}")
+
+    # ── 2c. Build combined context ─────────────────────────────────────────
     brand_info_parts = []
     if request.brand_name:
         brand_info_parts.append(f"Brand: {request.brand_name}")
@@ -746,10 +972,31 @@ async def analyze_audit(
     if request.marketplace:
         brand_info_parts.append(f"Marketplace: {request.marketplace}")
 
+    # Include existing scorecard context if provided (from store lookup)
+    scorecard_context = ""
+    if request.existing_scorecard:
+        sc = request.existing_scorecard
+        main_asin = sc.get("mainAsin", {})
+        scorecard_context = (
+            "\n=== EXISTING SCORECARD (from Store URL Lookup) ===\n"
+            f"Top listing: {main_asin.get('asin', 'N/A')} — {main_asin.get('title', 'N/A')}\n"
+            f"Image count: {sc.get('imageCount', {}).get('count', 'N/A')} "
+            f"(benchmark: {sc.get('imageCount', {}).get('benchmark', 7)})\n"
+            f"A+ Content: {'Yes' if sc.get('aPlusContent', {}).get('present') else 'No'}\n"
+            f"Brand Registry: {'Yes' if sc.get('brandRegistry', {}).get('detected') else 'No'}\n"
+            f"Reviews: {sc.get('reviewRating', {}).get('reviewCount', 'N/A')} "
+            f"(avg: {sc.get('reviewRating', {}).get('rating', 'N/A')}, "
+            f"category avg: {sc.get('reviewRating', {}).get('categoryAvg', 'N/A')})\n"
+            f"Key Finding: {sc.get('keyFinding', 'N/A')}\n"
+            "=== END SCORECARD ===\n\n"
+        )
+
     header = (
         "== Seller Information ==\n"
         + ("\n".join(brand_info_parts) if brand_info_parts else "(not provided)")
-        + "\n\n== Uploaded Report Data ==\n"
+        + "\n\n"
+        + scorecard_context
+        + "== Uploaded Report Data ==\n"
     )
 
     combined = header + ppc_context + snapshot_context + "\n\n".join(file_texts) if file_texts else (
@@ -883,6 +1130,47 @@ async def analyze_audit(
         print(f"[STEP 5b] Python performanceSnapshot override applied")
     else:
         print(f"[STEP 5b] No Python snapshot — keeping Claude estimates")
+
+    # ── 5c. Build adEfficiencySignal from Python PPC ──
+    if python_ppc:
+        meta = python_ppc["_meta"]
+        result["adEfficiencySignal"] = {
+            "totalSpend": meta["total_spend"],
+            "adAttributedSales": meta["total_sales"],
+            "currentAcos": python_ppc["currentAcos"],
+            "acosBenchmark": {"low": 25, "high": 30},
+            "zeroOrderSpend": meta["zero_waste"],
+            "topWastedTerms": python_ppc.get("topWastedTerms", []),
+            "totalRecoverableAdSpend": python_ppc["wastedSpend30Days"],
+            "keyFinding": result.get("adEfficiencySignal", {}).get("keyFinding", ""),
+        }
+        print(f"[STEP 5c] Python adEfficiencySignal override applied")
+
+    # ── 5c2. Build revenueGapReport from Python revenue gap calc ──
+    if python_revenue_gap:
+        result["revenueGapReport"] = python_revenue_gap
+        print(f"[STEP 5c2] Python revenueGapReport override applied: "
+              f"${python_revenue_gap['totalMonthlyRevenueGap']:,}/mo gap")
+
+    # ── 5d. Overlay compiledReport.totalMonthlyOpportunity ──
+    if "compiledReport" not in result:
+        result["compiledReport"] = {}
+    compiled = result["compiledReport"]
+
+    # Combine revenue gap + ad savings for total opportunity
+    rev_gap_total = python_revenue_gap["totalMonthlyRevenueGap"] if python_revenue_gap else 0
+    ad_savings = python_ppc["wastedSpend30Days"] if python_ppc else 0
+    snapshot_rev = 0
+    snapshot_sav = 0
+    if python_snapshot:
+        snapshot_rev = python_snapshot.get("revenueOpportunity", {}).get("totalMonthlyImpact", 0)
+        snapshot_sav = python_snapshot.get("profitabilityOpportunity", {}).get("totalMonthlySavings", 0)
+
+    total_opportunity = max(rev_gap_total + ad_savings, snapshot_rev + snapshot_sav)
+    if total_opportunity > 0:
+        compiled["totalMonthlyOpportunity"] = total_opportunity
+        print(f"[STEP 5d] compiledReport.totalMonthlyOpportunity = ${total_opportunity:,} "
+              f"(revGap=${rev_gap_total:,} + adSavings=${ad_savings:,})")
 
     # ── 6. Add section-level sources ──────────────────────────────────────
     ai_file_label = ", ".join(parsed_filenames) if parsed_filenames else "all uploaded files"
