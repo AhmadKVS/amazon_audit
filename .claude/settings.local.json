@@ -2,7 +2,9 @@
   "permissions": {
     "allow": [
       "Bash(python -c \":*)",
-      "Bash(npx tsc --noEmit)"
+      "Bash(npx tsc --noEmit)",
+      "WebSearch",
+      "WebFetch(domain:docs.trajectdata.com)"
     ]
   }
 }
