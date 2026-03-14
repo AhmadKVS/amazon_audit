@@ -428,7 +428,7 @@ export function PpcAnalysisCard({ data }: { data: AnalysisResult["ppcAnalysis"] 
           <p className={`text-lg font-bold ${acosNum === null ? "text-slate-500" : acosIsHigh ? "text-red-400" : "text-emerald-400"}`}>
             {acosNum !== null ? `${acosNum}%` : "N/A"}
           </p>
-          <p className="text-xs text-slate-600">target: {targetNum !== null ? `${targetNum}%` : "N/A"}</p>
+          <p className="text-xs text-slate-400">target: {targetNum !== null ? `${targetNum}%` : "N/A"}</p>
           <SourceTag source={data.currentAcos_source} />
         </div>
         <div className="rounded-xl bg-slate-800/60 border border-slate-700/50 px-3 py-3 text-center">
@@ -436,7 +436,7 @@ export function PpcAnalysisCard({ data }: { data: AnalysisResult["ppcAnalysis"] 
           <p className={`text-lg font-bold ${wastedNum !== null ? "text-red-400" : "text-slate-500"}`}>
             {wastedNum !== null ? formatDollars(wastedNum) : "N/A"}
           </p>
-          <p className="text-xs text-slate-600">recoverable</p>
+          <p className="text-xs text-slate-400">recoverable</p>
           <SourceTag source={data.wastedSpend30Days_source} />
         </div>
         <div className="rounded-xl bg-slate-800/60 border border-slate-700/50 px-3 py-3 text-center">
@@ -444,7 +444,7 @@ export function PpcAnalysisCard({ data }: { data: AnalysisResult["ppcAnalysis"] 
           <p className={`text-lg font-bold ${lowPerfNum !== null ? "text-amber-400" : "text-slate-500"}`}>
             {lowPerfNum !== null ? lowPerfNum : "N/A"}
           </p>
-          <p className="text-xs text-slate-600">campaigns</p>
+          <p className="text-xs text-slate-400">campaigns</p>
           <SourceTag source={data.lowPerformerCount_source} />
         </div>
       </div>
@@ -622,7 +622,7 @@ export function GatedCta({ gated }: { gated: AnalysisResult["gatedInsights"] }) 
           <ul className="space-y-2.5">
             {gated.fullReportItems.map((item, i) => (
               <li key={i} className="flex items-center gap-3">
-                <Lock className="w-4 h-4 text-slate-600 shrink-0" />
+                <Lock className="w-4 h-4 text-slate-400 shrink-0" />
                 <span
                   className="text-sm text-slate-300 select-none"
                   style={{ filter: "blur(4px)" }}
@@ -780,7 +780,7 @@ export function ListingHealthSection({ data }: { data: ListingHealthSnapshot }) 
         <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
           {/* Image Count */}
           <div className="rounded-xl bg-slate-800/60 border border-slate-700/50 p-3 space-y-2">
-            <p className="text-xs text-slate-500 font-medium">Images</p>
+            <p className="text-xs text-slate-400 font-medium">Images</p>
             {data.imageCount.count === null ? (
               <>
                 <p className="text-2xl font-bold text-slate-500">—</p>
@@ -806,7 +806,7 @@ export function ListingHealthSection({ data }: { data: ListingHealthSnapshot }) 
 
           {/* A+ Content */}
           <div className="rounded-xl bg-slate-800/60 border border-slate-700/50 p-3 space-y-2">
-            <p className="text-xs text-slate-500 font-medium">A+ Content</p>
+            <p className="text-xs text-slate-400 font-medium">A+ Content</p>
             {data.aPlusContent.present === null ? (
               <>
                 <p className="text-2xl font-bold text-slate-500">—</p>
@@ -830,7 +830,7 @@ export function ListingHealthSection({ data }: { data: ListingHealthSnapshot }) 
 
           {/* Brand Registry */}
           <div className="rounded-xl bg-slate-800/60 border border-slate-700/50 p-3 space-y-2">
-            <p className="text-xs text-slate-500 font-medium">Brand Registry</p>
+            <p className="text-xs text-slate-400 font-medium">Brand Registry</p>
             {data.brandRegistry.detected === null ? (
               <>
                 <p className="text-2xl font-bold text-slate-500">—</p>
@@ -852,16 +852,16 @@ export function ListingHealthSection({ data }: { data: ListingHealthSnapshot }) 
               </>
             )}
             {data.brandRegistry.brandName && (
-              <p className="text-xs text-slate-500 mt-1">Brand: {data.brandRegistry.brandName}</p>
+              <p className="text-xs text-slate-400 mt-1">Brand: {data.brandRegistry.brandName}</p>
             )}
             {data.brandRegistry.evidence && (
-              <p className="text-xs text-slate-500">{data.brandRegistry.evidence}</p>
+              <p className="text-xs text-slate-400">{data.brandRegistry.evidence}</p>
             )}
           </div>
 
           {/* Review Rating */}
           <div className="rounded-xl bg-slate-800/60 border border-slate-700/50 p-3 space-y-2">
-            <p className="text-xs text-slate-500 font-medium">Reviews</p>
+            <p className="text-xs text-slate-400 font-medium">Reviews</p>
             {data.reviewRating.rating === null ? (
               <>
                 <p className="text-2xl font-bold text-slate-500">—</p>
@@ -916,7 +916,7 @@ export function ListingHealthSection({ data }: { data: ListingHealthSnapshot }) 
             {/* Best Sellers */}
             {data.bestSellers && data.bestSellers.length > 0 && (
               <div className="space-y-2">
-                <p className="text-xs uppercase tracking-widest font-semibold text-emerald-500 flex items-center gap-1.5">
+                <p className="text-sm uppercase tracking-widest font-semibold text-emerald-500 flex items-center gap-1.5">
                   <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 10l7-7m0 0l7 7m-7-7v18" />
                   </svg>
@@ -932,12 +932,12 @@ export function ListingHealthSection({ data }: { data: ListingHealthSnapshot }) 
                       )}
                       <div className="flex-1 min-w-0">
                         <p className="text-xs text-slate-200 truncate group-hover:text-emerald-300 transition-colors">{p.title}</p>
-                        <p className="text-sm text-slate-500 mt-0.5 font-mono">{p.asin}</p>
+                        <p className="text-lg text-slate-500 mt-0.5 font-mono font-medium">{p.asin}</p>
                       </div>
                       <div className="text-right shrink-0 space-y-0.5">
-                        <p className="text-sm text-amber-400 font-medium">{p.rating}★</p>
-                        <p className="text-xs text-slate-500">{(p.reviews || 0).toLocaleString()} reviews</p>
-                        <p className="text-xs text-emerald-400">{p.price}</p>
+                        <p className="text-lg text-amber-400 font-medium">{p.rating}★</p>
+                        <p className="text-base text-slate-500 font-medium">{(p.reviews || 0).toLocaleString()} reviews</p>
+                        <p className="text-base text-emerald-400 font-medium">{p.price}</p>
                       </div>
                     </a>
                   ))}
@@ -948,7 +948,7 @@ export function ListingHealthSection({ data }: { data: ListingHealthSnapshot }) 
             {/* Lowest Sellers */}
             {data.lowestSellers && data.lowestSellers.length > 0 && (
               <div className="space-y-2">
-                <p className="text-xs uppercase tracking-widest font-semibold text-amber-500 flex items-center gap-1.5">
+                <p className="text-sm uppercase tracking-widest font-semibold text-amber-500 flex items-center gap-1.5">
                   <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 14l-7 7m0 0l-7-7m7 7V3" />
                   </svg>
@@ -964,12 +964,12 @@ export function ListingHealthSection({ data }: { data: ListingHealthSnapshot }) 
                       )}
                       <div className="flex-1 min-w-0">
                         <p className="text-xs text-slate-200 truncate group-hover:text-amber-300 transition-colors">{p.title}</p>
-                        <p className="text-sm text-slate-500 mt-0.5 font-mono">{p.asin}</p>
+                        <p className="text-lg text-slate-500 mt-0.5 font-mono font-medium">{p.asin}</p>
                       </div>
                       <div className="text-right shrink-0 space-y-0.5">
-                        <p className="text-sm text-amber-400 font-medium">{p.rating}★</p>
-                        <p className="text-xs text-slate-500">{(p.reviews || 0).toLocaleString()} reviews</p>
-                        <p className="text-xs text-emerald-400">{p.price}</p>
+                        <p className="text-lg text-amber-400 font-medium">{p.rating}★</p>
+                        <p className="text-base text-slate-500 font-medium">{(p.reviews || 0).toLocaleString()} reviews</p>
+                        <p className="text-base text-emerald-400 font-medium">{p.price}</p>
                       </div>
                     </a>
                   ))}
@@ -1024,7 +1024,7 @@ export function ListingHealthSection({ data }: { data: ListingHealthSnapshot }) 
                 });
               })()}
             </div>
-            <p className="text-[10px] text-slate-600">Data pulled directly from Amazon in real-time via Rainforest API</p>
+            <p className="text-xs text-slate-400">Data pulled directly from Amazon in real-time via Rainforest API</p>
           </div>
         )}
       </div>
@@ -1153,7 +1153,7 @@ export function AdEfficiencySection({ data }: { data: AdEfficiencySignal }) {
             <p className={`text-lg font-bold ${acosStatus === "good" ? "text-emerald-400" : acosStatus === "critical" ? "text-red-400" : acosStatus === "warning" ? "text-amber-400" : "text-slate-400"}`}>
               {acosNum !== null ? `${acosNum}%` : "N/A"}
             </p>
-            <p className="text-[10px] text-slate-600">target: {acosLow}-{acosHigh}%</p>
+            <p className="text-[10px] text-slate-400">target: {acosLow}-{acosHigh}%</p>
           </div>
           <div className="rounded-xl bg-slate-800/60 border border-slate-700/50 px-3 py-3 text-center">
             <p className="text-xs text-slate-500 mb-1">Zero-Order Spend</p>
@@ -1263,14 +1263,14 @@ export function LockedSectionCard({
       </div>
 
       <div className="rounded-2xl border border-slate-800/80 bg-slate-900/30 p-6 space-y-5 relative overflow-hidden">
-        <p className="text-sm text-slate-500">{description}</p>
+        <p className="text-sm text-slate-400">{description}</p>
 
         {/* Blurred teaser metrics */}
         <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
           {teaserMetrics.map((m, i) => (
             <div key={i} className="rounded-xl bg-slate-800/40 border border-slate-700/30 p-3 space-y-1">
-              <p className="text-xs text-slate-600 font-medium">{m.label}</p>
-              <p className="text-lg font-bold text-slate-600 blur-[6px] select-none">{m.blurredValue}</p>
+              <p className="text-xs text-slate-400 font-medium">{m.label}</p>
+              <p className="text-lg font-bold text-slate-400 blur-[6px] select-none">{m.blurredValue}</p>
             </div>
           ))}
         </div>
@@ -1281,7 +1281,7 @@ export function LockedSectionCard({
             <Zap className="w-3 h-3 inline mr-1" />
             Upload your {uploadLabel} to unlock this section
           </p>
-          <p className="text-xs text-slate-600">{uploadHelperText}</p>
+          <p className="text-xs text-slate-400">{uploadHelperText}</p>
 
           <input
             ref={inputRef}
@@ -1324,7 +1324,7 @@ export function LockedSectionCard({
               </svg>
               <div className="text-left">
                 <p className="text-xs font-medium text-slate-300">Drop your {uploadLabel} here or click to browse</p>
-                <p className="text-xs text-slate-600">CSV or Excel file</p>
+                <p className="text-xs text-slate-400">CSV or Excel file</p>
               </div>
             </button>
           )}

@@ -432,7 +432,7 @@ function AuditResultsContent() {
           /* Text colours */
           .text-slate-100, .text-slate-200, .text-slate-300 { color: #1e293b !important; }
           .text-slate-400 { color: #475569 !important; }
-          .text-slate-500, .text-slate-600 { color: #64748b !important; }
+          .text-slate-500, .text-slate-400 { color: #64748b !important; }
           .text-white { color: #0f172a !important; }
 
           /* Cards: white bg, light border */
@@ -666,7 +666,7 @@ function AuditResultsContent() {
       {/* Print-only footer */}
       <div className="print-only hidden mt-10 pt-4 text-center" style={{borderTop: "1px solid #e2e8f0"}}>
         <p className="text-[10px] text-slate-400">
-          Confidential · Prepared by <span className="font-semibold text-slate-600">Revlyn</span> · {new Date().toLocaleDateString("en-US", { month: "long", year: "numeric" })}
+          Confidential · Prepared by <span className="font-semibold text-slate-400">Revlyn</span> · {new Date().toLocaleDateString("en-US", { month: "long", year: "numeric" })}
         </p>
       </div>
     </div>

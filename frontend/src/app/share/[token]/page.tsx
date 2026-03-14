@@ -71,8 +71,8 @@ function ReadOnlyLockedSection({
         <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
           {teaserMetrics.map((m, i) => (
             <div key={i} className="rounded-xl bg-slate-800/40 border border-slate-700/30 p-3 space-y-1">
-              <p className="text-xs text-slate-600 font-medium">{m.label}</p>
-              <p className="text-lg font-bold text-slate-600 blur-[6px] select-none">{m.blurredValue}</p>
+              <p className="text-xs text-slate-400 font-medium">{m.label}</p>
+              <p className="text-lg font-bold text-slate-400 blur-[6px] select-none">{m.blurredValue}</p>
             </div>
           ))}
         </div>
@@ -251,7 +251,7 @@ export default function SharePage() {
         </main>
 
         <footer className="border-t border-slate-800 mt-16 py-6 no-print">
-          <p className="text-center text-xs text-slate-600">Prepared with Amazon Audit &middot; {date}</p>
+          <p className="text-center text-xs text-slate-400">Prepared with Amazon Audit &middot; {date}</p>
         </footer>
       </div>
     );
@@ -422,7 +422,7 @@ export default function SharePage() {
       </main>
 
       <footer className="border-t border-slate-800 mt-16 py-6 no-print">
-        <p className="text-center text-xs text-slate-600">Prepared with Amazon Audit &middot; {date}</p>
+        <p className="text-center text-xs text-slate-400">Prepared with Amazon Audit &middot; {date}</p>
       </footer>
     </div>
   );

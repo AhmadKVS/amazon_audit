@@ -228,7 +228,7 @@ export default function AdminDashboard() {
                           {REPORT_LABELS[audit.report_type] ?? audit.report_type}
                         </span>
                       </div>
-                      <p className="text-xs text-slate-600 mt-1.5">{formatDate(audit.created_at)}</p>
+                      <p className="text-xs text-slate-400 mt-1.5">{formatDate(audit.created_at)}</p>
                     </div>
                     <div className="shrink-0 flex items-center gap-2 mt-1">
                       <Link
