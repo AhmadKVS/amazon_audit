@@ -86,10 +86,10 @@ export interface AnalysisResult {
 
 export interface ListingHealthSnapshot {
   mainAsin: { asin: string; title: string; url?: string; imageUrl?: string };
-  imageCount: { count: number; benchmark: number; status: string; imageUrls?: string[] };
-  aPlusContent: { present: boolean; status: string; proofUrl?: string };
-  brandRegistry: { detected: boolean; status: string; brandName?: string; evidence?: string };
-  reviewRating: { rating: number; reviewCount: number; categoryAvg: number; status: string; ratingDistribution?: Record<number, number> };
+  imageCount: { count: number | null; benchmark: number; status: string; imageUrls?: string[] };
+  aPlusContent: { present: boolean | null; status: string; proofUrl?: string };
+  brandRegistry: { detected: boolean | null; status: string; brandName?: string; evidence?: string; dataSource?: string };
+  reviewRating: { rating: number | null; reviewCount: number | null; categoryAvg: number | null; status: string; ratingDistribution?: Record<string | number, number> };
   topProducts?: { asin: string; title: string; rating: number; reviews: number; price: string; image?: string; link?: string }[];
   bestSellers?: { asin: string; title: string; rating: number; reviews: number; price: string; image?: string; link?: string }[];
   lowestSellers?: { asin: string; title: string; rating: number; reviews: number; price: string; image?: string; link?: string }[];
@@ -781,13 +781,24 @@ export function ListingHealthSection({ data }: { data: ListingHealthSnapshot }) 
           {/* Image Count */}
           <div className="rounded-xl bg-slate-800/60 border border-slate-700/50 p-3 space-y-2">
             <p className="text-xs text-slate-500 font-medium">Images</p>
-            <p className={`text-2xl font-bold ${data.imageCount.status === "good" ? "text-emerald-400" : data.imageCount.status === "critical" ? "text-red-400" : "text-amber-400"}`}>
-              {data.imageCount.count}<span className="text-sm text-slate-500">/{data.imageCount.benchmark}</span>
-            </p>
-            {statusBadge(data.imageCount.status, data.imageCount.status === "good" ? "Meets benchmark" : "Below benchmark")}
+            {data.imageCount.count === null ? (
+              <>
+                <p className="text-2xl font-bold text-slate-500">—</p>
+                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium bg-slate-700/60 text-slate-400">Not found</span>
+              </>
+            ) : (
+              <>
+                <div className="space-y-1">
+                  <p className={`text-2xl font-bold ${data.imageCount.status === "good" ? "text-emerald-400" : data.imageCount.status === "critical" ? "text-red-400" : "text-amber-400"}`}>
+                    {data.imageCount.count}<span className="text-sm text-slate-500">/{data.imageCount.benchmark}</span>
+                  </p>
+                  {statusBadge(data.imageCount.status, data.imageCount.status === "good" ? "Meets benchmark" : "Below benchmark")}
+                </div>
+              </>
+            )}
             {data.imageCount.imageUrls && data.imageCount.imageUrls.length > 0 && (
               <button onClick={() => setShowImages(!showImages)}
-                className="text-[10px] text-blue-400 hover:text-blue-300 mt-1 transition-colors">
+                className="block text-[10px] text-blue-400 hover:text-blue-300 mt-2 transition-colors">
                 {showImages ? "Hide images" : "View images"}
               </button>
             )}
@@ -796,10 +807,19 @@ export function ListingHealthSection({ data }: { data: ListingHealthSnapshot }) 
           {/* A+ Content */}
           <div className="rounded-xl bg-slate-800/60 border border-slate-700/50 p-3 space-y-2">
             <p className="text-xs text-slate-500 font-medium">A+ Content</p>
-            <p className={`text-2xl font-bold ${data.aPlusContent.present ? "text-emerald-400" : "text-amber-400"}`}>
-              {data.aPlusContent.present ? "Yes" : "No"}
-            </p>
-            {statusBadge(data.aPlusContent.status, data.aPlusContent.present ? "Active" : "Missing")}
+            {data.aPlusContent.present === null ? (
+              <>
+                <p className="text-2xl font-bold text-slate-500">—</p>
+                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium bg-slate-700/60 text-slate-400">Not found</span>
+              </>
+            ) : (
+              <>
+                <p className={`text-2xl font-bold ${data.aPlusContent.present ? "text-emerald-400" : "text-amber-400"}`}>
+                  {data.aPlusContent.present ? "Yes" : "No"}
+                </p>
+                {statusBadge(data.aPlusContent.status, data.aPlusContent.present ? "Active" : "Missing")}
+              </>
+            )}
             {data.aPlusContent.proofUrl && (
               <a href={data.aPlusContent.proofUrl} target="_blank" rel="noopener noreferrer"
                 className="block text-[10px] text-blue-400 hover:text-blue-300 mt-1 transition-colors">
@@ -811,37 +831,65 @@ export function ListingHealthSection({ data }: { data: ListingHealthSnapshot }) 
           {/* Brand Registry */}
           <div className="rounded-xl bg-slate-800/60 border border-slate-700/50 p-3 space-y-2">
             <p className="text-xs text-slate-500 font-medium">Brand Registry</p>
-            <p className={`text-2xl font-bold ${data.brandRegistry.detected ? "text-emerald-400" : "text-amber-400"}`}>
-              {data.brandRegistry.detected ? "Yes" : "No"}
-            </p>
-            {statusBadge(data.brandRegistry.status, data.brandRegistry.detected ? "Enrolled" : "Not detected")}
+            {data.brandRegistry.detected === null ? (
+              <>
+                <p className="text-2xl font-bold text-slate-500">—</p>
+                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium bg-slate-700/60 text-slate-400">Not found</span>
+              </>
+            ) : (
+              <>
+                <p className={`text-2xl font-bold ${data.brandRegistry.detected ? "text-emerald-400" : "text-amber-400"}`}>
+                  {data.brandRegistry.detected ? "Yes" : "No"}
+                </p>
+                <div className="flex flex-wrap gap-1">
+                  {statusBadge(data.brandRegistry.status, data.brandRegistry.detected ? "Enrolled" : "Not detected")}
+                  {data.brandRegistry.dataSource === "perplexity" && (
+                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium bg-amber-500/10 border border-amber-500/30 text-amber-400">
+                      Web search
+                    </span>
+                  )}
+                </div>
+              </>
+            )}
             {data.brandRegistry.brandName && (
-              <p className="text-[10px] text-slate-500 mt-1">Brand: {data.brandRegistry.brandName}</p>
+              <p className="text-xs text-slate-500 mt-1">Brand: {data.brandRegistry.brandName}</p>
             )}
             {data.brandRegistry.evidence && (
-              <p className="text-[10px] text-slate-500">{data.brandRegistry.evidence}</p>
+              <p className="text-xs text-slate-500">{data.brandRegistry.evidence}</p>
             )}
           </div>
 
           {/* Review Rating */}
           <div className="rounded-xl bg-slate-800/60 border border-slate-700/50 p-3 space-y-2">
             <p className="text-xs text-slate-500 font-medium">Reviews</p>
-            <p className={`text-2xl font-bold ${data.reviewRating.status === "good" ? "text-emerald-400" : data.reviewRating.status === "critical" ? "text-red-400" : "text-amber-400"}`}>
-              {data.reviewRating.rating}<span className="text-sm text-slate-500">★</span>
-            </p>
-            <p className="text-[10px] text-slate-500">{data.reviewRating.reviewCount.toLocaleString()} reviews · avg {data.reviewRating.categoryAvg}★</p>
+            {data.reviewRating.rating === null ? (
+              <>
+                <p className="text-2xl font-bold text-slate-500">—</p>
+                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium bg-slate-700/60 text-slate-400">Not found</span>
+              </>
+            ) : (
+              <>
+                <p className={`text-2xl font-bold ${data.reviewRating.status === "good" ? "text-emerald-400" : data.reviewRating.status === "critical" ? "text-red-400" : "text-amber-400"}`}>
+                  {data.reviewRating.rating}<span className="text-sm text-yellow-400">★</span>
+                </p>
+                <p className="text-xs text-slate-500">
+                  {data.reviewRating.reviewCount !== null ? data.reviewRating.reviewCount.toLocaleString() : "?"} reviews
+                  {data.reviewRating.categoryAvg !== null ? ` · avg ${data.reviewRating.categoryAvg}★` : ""}
+                </p>
+              </>
+            )}
             {/* Rating distribution bars */}
             {data.reviewRating.ratingDistribution && (
-              <div className="space-y-0.5 mt-1">
+              <div className="space-y-1.5 mt-2">
                 {[5, 4, 3, 2, 1].map((star) => {
-                  const pct = data.reviewRating.ratingDistribution?.[star] ?? 0;
+                  const pct = data.reviewRating.ratingDistribution?.[String(star)] ?? data.reviewRating.ratingDistribution?.[star] ?? 0;
                   return (
-                    <div key={star} className="flex items-center gap-1">
-                      <span className="text-[8px] text-slate-500 w-3 text-right">{star}</span>
-                      <div className="flex-1 h-1.5 bg-slate-700/50 rounded-full overflow-hidden">
-                        <div className="h-full rounded-full bg-amber-400/70" style={{ width: `${pct}%` }} />
+                    <div key={star} className="flex items-center gap-2 min-h-[20px]">
+                      <span className="text-xs font-medium text-slate-400 w-5 shrink-0 text-right tabular-nums">{star}</span>
+                      <div className="flex-1 min-w-0 h-2 bg-slate-700/50 rounded-full overflow-hidden">
+                        <div className="h-full rounded-full bg-amber-400/70 transition-[width]" style={{ width: `${pct}%` }} />
                       </div>
-                      <span className="text-[8px] text-slate-600 w-6 text-right">{pct}%</span>
+                      <span className="text-xs font-medium text-slate-400 w-9 shrink-0 text-right tabular-nums">{pct}%</span>
                     </div>
                   );
                 })}
@@ -872,7 +920,7 @@ export function ListingHealthSection({ data }: { data: ListingHealthSnapshot }) 
                   <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 10l7-7m0 0l7 7m-7-7v18" />
                   </svg>
-                  Top 3 Best Sellers
+                  Top {data.bestSellers.length} Best Seller{data.bestSellers.length !== 1 ? "s" : ""}
                 </p>
                 <div className="space-y-2">
                   {data.bestSellers.map((p, i) => (
@@ -884,12 +932,12 @@ export function ListingHealthSection({ data }: { data: ListingHealthSnapshot }) 
                       )}
                       <div className="flex-1 min-w-0">
                         <p className="text-xs text-slate-200 truncate group-hover:text-emerald-300 transition-colors">{p.title}</p>
-                        <p className="text-[10px] text-slate-500 mt-0.5 font-mono">{p.asin}</p>
+                        <p className="text-sm text-slate-500 mt-0.5 font-mono">{p.asin}</p>
                       </div>
                       <div className="text-right shrink-0 space-y-0.5">
-                        <p className="text-xs text-amber-400 font-medium">{p.rating}★</p>
-                        <p className="text-[10px] text-slate-500">{(p.reviews || 0).toLocaleString()} reviews</p>
-                        <p className="text-[10px] text-slate-400">{p.price}</p>
+                        <p className="text-sm text-amber-400 font-medium">{p.rating}★</p>
+                        <p className="text-xs text-slate-500">{(p.reviews || 0).toLocaleString()} reviews</p>
+                        <p className="text-xs text-emerald-400">{p.price}</p>
                       </div>
                     </a>
                   ))}
@@ -904,7 +952,7 @@ export function ListingHealthSection({ data }: { data: ListingHealthSnapshot }) 
                   <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 14l-7 7m0 0l-7-7m7 7V3" />
                   </svg>
-                  Top 3 Lowest Sellers
+                  Top {data.lowestSellers.length} Lowest Seller{data.lowestSellers.length !== 1 ? "s" : ""}
                 </p>
                 <div className="space-y-2">
                   {data.lowestSellers.map((p, i) => (
@@ -916,12 +964,12 @@ export function ListingHealthSection({ data }: { data: ListingHealthSnapshot }) 
                       )}
                       <div className="flex-1 min-w-0">
                         <p className="text-xs text-slate-200 truncate group-hover:text-amber-300 transition-colors">{p.title}</p>
-                        <p className="text-[10px] text-slate-500 mt-0.5 font-mono">{p.asin}</p>
+                        <p className="text-sm text-slate-500 mt-0.5 font-mono">{p.asin}</p>
                       </div>
                       <div className="text-right shrink-0 space-y-0.5">
-                        <p className="text-xs text-amber-400 font-medium">{p.rating}★</p>
-                        <p className="text-[10px] text-slate-500">{(p.reviews || 0).toLocaleString()} reviews</p>
-                        <p className="text-[10px] text-slate-400">{p.price}</p>
+                        <p className="text-sm text-amber-400 font-medium">{p.rating}★</p>
+                        <p className="text-xs text-slate-500">{(p.reviews || 0).toLocaleString()} reviews</p>
+                        <p className="text-xs text-emerald-400">{p.price}</p>
                       </div>
                     </a>
                   ))}
@@ -947,29 +995,34 @@ export function ListingHealthSection({ data }: { data: ListingHealthSnapshot }) 
               Verified Sources
             </p>
             <div className="flex flex-wrap gap-2">
-              {data.citations.map((url, i) => {
-                const label = url.includes("/dp/")
-                  ? `Amazon listing ${i + 1}`
-                  : url.includes("amazon.com/stores")
-                  ? "Amazon Store"
-                  : url.includes("amazon.com")
-                  ? `Amazon source ${i + 1}`
-                  : `Source ${i + 1}`;
-                return (
-                  <a
-                    key={i}
-                    href={url}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-emerald-500/10 border border-emerald-500/20 text-xs text-emerald-400 hover:bg-emerald-500/20 hover:border-emerald-500/40 transition-colors"
-                  >
-                    <svg className="w-3 h-3 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
-                    </svg>
-                    {label}
-                  </a>
-                );
-              })}
+              {(() => {
+                let listingNum = 0;
+                return data.citations.map((url, i) => {
+                  let label: string;
+                  if (url.includes("amazon.com/stores") || url.includes("/stores/")) {
+                    label = "Amazon Store";
+                  } else if (url.includes("/dp/")) {
+                    listingNum++;
+                    label = `Listing ${listingNum}`;
+                  } else {
+                    label = `Source ${i + 1}`;
+                  }
+                  return (
+                    <a
+                      key={i}
+                      href={url}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-emerald-500/10 border border-emerald-500/20 text-xs text-emerald-400 hover:bg-emerald-500/20 hover:border-emerald-500/40 transition-colors"
+                    >
+                      <svg className="w-3 h-3 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
+                      </svg>
+                      {label}
+                    </a>
+                  );
+                });
+              })()}
             </div>
             <p className="text-[10px] text-slate-600">Data pulled directly from Amazon in real-time via Rainforest API</p>
           </div>

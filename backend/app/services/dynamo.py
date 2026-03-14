@@ -291,6 +291,35 @@ def get_audit_by_token(token: str) -> dict | None:
 
     # Fetch the actual audit record
     item = table.get_item(Key={"user_id": owner_id, "audit_id": real_audit_id}).get("Item")
-    if not item:
-        return None
-    return _to_native(item)
+    if item:
+        return _to_native(item)
+
+    # Fallback: owner_id may be stale (IP changed since audit creation).
+    # Scan for the audit by audit_id across all users.
+    print(f"[dynamo] get_audit_by_token: direct lookup failed for owner={owner_id[:8]}… audit={real_audit_id}, trying scan fallback")
+    item = find_audit_by_id(real_audit_id)
+    if item:
+        # Fix the share pointer so future lookups don't need a scan
+        try:
+            table.update_item(
+                Key={"user_id": "share", "audit_id": token},
+                UpdateExpression="SET owner_id = :o",
+                ExpressionAttributeValues={":o": item["user_id"]},
+            )
+        except Exception:
+            pass
+        return _to_native(item)
+    return None
+
+
+def find_audit_by_id(audit_id: str) -> dict | None:
+    """Find an audit by audit_id regardless of user_id (scan fallback)."""
+    table = _resource().Table(settings.DYNAMODB_TABLE)
+    resp = table.scan(
+        FilterExpression=(
+            boto3.dynamodb.conditions.Attr("audit_id").eq(audit_id)
+            & boto3.dynamodb.conditions.Attr("user_id").ne("share")
+        ),
+    )
+    items = resp.get("Items", [])
+    return items[0] if items else None

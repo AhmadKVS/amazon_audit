@@ -77,7 +77,7 @@ def _build_html(
 
     rv_data    = scorecard.get("reviewRating", {})
     rv_rating  = rv_data.get("rating", "—")
-    rv_count   = rv_data.get("reviewCount", 0)
+    rv_count   = rv_data.get("reviewCount") or 0
     rv_cat_avg = rv_data.get("categoryAvg", "—")
     rv_status  = rv_data.get("status", "warning")
 
@@ -86,14 +86,14 @@ def _build_html(
     # Optional "view full report" section
     view_report_html = ""
     if share_token:
-        share_url = f"https://app.withrevlyn.com/share/{share_token}"
+        share_url = f"https://amazon-audit.vercel.app/share/{share_token}"
         view_report_html = f"""
         <tr>
           <td style="padding:0 0 24px 0;text-align:center;">
             <a href="{share_url}"
-               style="display:inline-block;padding:12px 28px;background:#1e293b;
-                      color:#94a3b8;text-decoration:none;border-radius:8px;
-                      font-size:14px;font-weight:600;border:1px solid #334155;">
+               style="display:inline-block;padding:12px 28px;background:#f59e0b;
+                      color:#0f172a;text-decoration:none;border-radius:8px;
+                      font-size:14px;font-weight:700;border:1px solid #d97706;">
               View Full Report Online &rarr;
             </a>
           </td>
@@ -277,7 +277,7 @@ def _build_html(
                 <a href="https://withrevlyn.com" style="color:#f59e0b;text-decoration:none;">Revlyn</a>
                 based on publicly available Amazon data.
                 &nbsp;&bull;&nbsp;
-                You requested this scorecard at {settings.SES_FROM_EMAIL or "revlyn.com"}.
+                You requested this scorecard at revlyn.com
               </p>
             </td>
           </tr>
@@ -307,13 +307,17 @@ def send_scorecard_email(
     Returns True on success, False on any failure (caller should never raise).
     Silently skips if SES_FROM_EMAIL is not configured.
     """
+    print(f"[email] send_scorecard_email called — to={to_email!r} brand={brand_name!r} audit={audit_id} share_token={'set' if share_token else 'none'}")
+
     from_email = settings.SES_FROM_EMAIL.strip()
+    print(f"[email] SES_FROM_EMAIL={from_email!r} AWS_REGION={settings.AWS_REGION!r} has_key={bool(settings.AWS_ACCESS_KEY_ID)}")
+
     if not from_email:
-        print("[email] SES_FROM_EMAIL not configured — skipping email send")
+        print("[email] SKIP: SES_FROM_EMAIL is empty — set it in .env or Vercel env vars")
         return False
 
     if not to_email or "@" not in to_email:
-        print(f"[email] Invalid to_email={to_email!r} — skipping")
+        print(f"[email] SKIP: invalid to_email={to_email!r}")
         return False
 
     subject = f"{brand_name} \u2014 Your Amazon Account Scorecard"
@@ -324,7 +328,9 @@ def send_scorecard_email(
         f"Book a free strategy call to review the findings: {BOOKING_URL}\n"
     )
     if share_token:
-        text_body += f"\nView your full report: https://app.withrevlyn.com/share/{share_token}\n"
+        text_body += f"\nView your full report: https://amazon-audit.vercel.app/share/{share_token}\n"
+
+    print(f"[email] Attempting SES send — from={from_email!r} to={to_email!r} subject={subject!r} region={settings.AWS_REGION!r}")
 
     try:
         ses = boto3.client(
@@ -333,7 +339,7 @@ def send_scorecard_email(
             aws_access_key_id=settings.AWS_ACCESS_KEY_ID or None,
             aws_secret_access_key=settings.AWS_SECRET_ACCESS_KEY or None,
         )
-        ses.send_email(
+        response = ses.send_email(
             Source=from_email,
             Destination={"ToAddresses": [to_email]},
             Message={
@@ -344,13 +350,15 @@ def send_scorecard_email(
                 },
             },
         )
-        print(f"[email] Scorecard sent to {to_email} for brand={brand_name!r} audit={audit_id}")
+        message_id = response.get("MessageId", "unknown")
+        print(f"[email] SUCCESS — MessageId={message_id} to={to_email!r} brand={brand_name!r} audit={audit_id}")
         return True
     except ClientError as e:
         code = e.response["Error"]["Code"]
         msg  = e.response["Error"]["Message"]
-        print(f"[email] SES ClientError {code}: {msg}")
+        print(f"[email] FAIL SES ClientError: code={code!r} message={msg!r}")
+        print(f"[email] FAIL details: from={from_email!r} to={to_email!r} region={settings.AWS_REGION!r} has_key={bool(settings.AWS_ACCESS_KEY_ID)}")
         return False
     except Exception as e:
-        print(f"[email] Unexpected error: {type(e).__name__}: {e}")
+        print(f"[email] FAIL unexpected: {type(e).__name__}: {e}")
         return False

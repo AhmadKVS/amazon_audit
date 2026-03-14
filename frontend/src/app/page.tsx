@@ -51,6 +51,7 @@ export default function Dashboard() {
           category: data.category,
           competitive_summary: data.competitive_summary,
           price_range: data.price_range,
+          brand_analysis: data.brand_analysis,
         })
       );
 
@@ -105,7 +106,7 @@ export default function Dashboard() {
                 placeholder="https://amazon.com/stores/YourBrand"
                 className="block w-full rounded-lg border border-slate-700 bg-slate-800 px-4 py-3 text-sm text-slate-100 placeholder-slate-500 focus:border-amber-500 focus:ring-1 focus:ring-amber-500 outline-none transition"
               />
-              <p className="text-xs text-slate-600 mt-1.5">
+              <p className="text-xs text-[var(--tw-ring-offset-color)] mt-1.5">
                 Paste your Amazon storefront, seller page, or any product listing URL.
               </p>
             </div>
@@ -118,10 +119,10 @@ export default function Dashboard() {
                 type="text"
                 value={brandName}
                 onChange={(e) => setBrandName(e.target.value)}
-                placeholder="e.g. Crystalcleancarcare"
+                placeholder="e.g. Crystal Clean Car Care"
                 className="block w-full rounded-lg border border-slate-700 bg-slate-800 px-4 py-3 text-sm text-slate-100 placeholder-slate-500 focus:border-amber-500 focus:ring-1 focus:ring-amber-500 outline-none transition"
               />
-              <p className="text-xs text-slate-600 mt-1.5">
+              <p className="text-xs text-[var(--tw-ring-offset-color)] mt-1.5">
                 Helps us identify your products more accurately.
               </p>
             </div>
@@ -138,7 +139,7 @@ export default function Dashboard() {
                 placeholder="you@company.com"
                 className="block w-full rounded-lg border border-slate-700 bg-slate-800 px-4 py-3 text-sm text-slate-100 placeholder-slate-500 focus:border-amber-500 focus:ring-1 focus:ring-amber-500 outline-none transition"
               />
-              <p className="text-xs text-slate-600 mt-1.5">
+              <p className="text-xs text-[var(--tw-ring-offset-color)] mt-1.5">
                 We&apos;ll send your scorecard results to this email.
               </p>
             </div>

@@ -7,7 +7,10 @@ import uuid
 from fastapi import APIRouter, Depends, HTTPException, Request
 
 from app.core.dependencies import get_current_user
-from app.services.dynamo import set_share_token, get_audit_by_token, find_previous_audit
+from app.services.dynamo import (
+    set_share_token, get_audit_by_token, find_previous_audit,
+    get_audit as dynamo_get, find_audit_by_id,
+)
 
 router = APIRouter()
 
@@ -19,10 +22,20 @@ async def create_share_link(
     user: str = Depends(get_current_user),
 ):
     """Generate a shareable public link for an audit report."""
+    # Resolve the actual owner: current user first, then scan fallback
+    # (handles IP-change scenarios where user views page from cache)
+    actual_owner = user
+    audit = dynamo_get(user, audit_id)
+    if not audit:
+        found = find_audit_by_id(audit_id)
+        if found:
+            actual_owner = found["user_id"]
+        # If neither found, still create the token — the audit may be saved later
+
     token = uuid.uuid4().hex  # 32-char hex token
 
     try:
-        set_share_token(user_id=user, audit_id=audit_id, token=token)
+        set_share_token(user_id=actual_owner, audit_id=audit_id, token=token)
     except Exception as e:
         raise HTTPException(500, f"Failed to create share link: {e}")
 

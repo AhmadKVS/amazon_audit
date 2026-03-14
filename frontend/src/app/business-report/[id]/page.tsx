@@ -519,5 +519,9 @@ function BusinessReportContent() {
 }
 
 export default function BusinessReportPage() {
-  return <BusinessReportContent />;
+  return (
+    <React.Suspense>
+      <BusinessReportContent />
+    </React.Suspense>
+  );
 }

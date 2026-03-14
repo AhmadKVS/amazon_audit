@@ -146,11 +146,16 @@ async def _synthesize(client: httpx.AsyncClient, research_context: str, req: Ana
         f"in the '{req.niche or 'general Amazon products'}' niche on {req.marketplace}, "
         f"selling via {rtype} reports:{purpose_line}{notes_line}\n\n"
         f"{research_context}\n\n"
-        "Return a single JSON object with EXACTLY these two top-level keys:\n"
+        "Return a single JSON object with EXACTLY these three top-level keys:\n"
         "1. \"brand_analysis\": {\n"
         "     \"summary\": \"<2-3 sentence overview of the brand and its market position>\",\n"
         "     \"competitive_landscape\": \"<2-3 sentences on competitive dynamics and key success drivers>\",\n"
-        "     \"top_seller_traits\": [\"<trait>\", \"<trait>\", \"<trait>\", \"<trait>\"]\n"
+        "     \"top_seller_traits\": [\"<trait>\", \"<trait>\", \"<trait>\", \"<trait>\"],\n"
+        "     \"summary_bullets\": {\n"
+        "         \"strongest_points\": \"<1 sentence: what this brand does best on Amazon>\",\n"
+        "         \"areas_of_improvement\": \"<1 sentence: the biggest gap or weakness to address>\",\n"
+        "         \"revlyn_help\": \"<1 sentence: how Revlyn can specifically help this brand grow>\"\n"
+        "     }\n"
         "   }\n"
         "2. \"recommendations\": [\n"
         "     {\"title\": \"<short action title>\", "
@@ -182,8 +187,17 @@ async def _synthesize(client: httpx.AsyncClient, research_context: str, req: Ana
                                         "type": "array",
                                         "items": {"type": "string"},
                                     },
+                                    "summary_bullets": {
+                                        "type": "object",
+                                        "properties": {
+                                            "strongest_points": {"type": "string"},
+                                            "areas_of_improvement": {"type": "string"},
+                                            "revlyn_help": {"type": "string"},
+                                        },
+                                        "required": ["strongest_points", "areas_of_improvement", "revlyn_help"],
+                                    },
                                 },
-                                "required": ["summary", "competitive_landscape", "top_seller_traits"],
+                                "required": ["summary", "competitive_landscape", "top_seller_traits", "summary_bullets"],
                             },
                             "recommendations": {
                                 "type": "array",
@@ -321,6 +335,7 @@ async def analyze(req: AnalyzeRequest, user: str = Depends(get_current_user), _r
             "summary":               brand_analysis.get("summary", ""),
             "competitive_landscape": brand_analysis.get("competitive_landscape", ""),
             "top_seller_traits":     brand_analysis.get("top_seller_traits", []),
+            "summary_bullets":       brand_analysis.get("summary_bullets", {}),
         },
         "recommendations": recommendations,
         "search_results": [

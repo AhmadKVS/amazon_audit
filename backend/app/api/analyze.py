@@ -698,10 +698,10 @@ The JSON must have ALL of the following top-level keys. You MUST include BOTH th
 {
   "listingHealthSnapshot": {
     "mainAsin": {"asin": "B0...", "title": "Product Name"},
-    "imageCount": {"count": <int>, "benchmark": 7, "status": "good"|"warning"|"critical"},
-    "aPlusContent": {"present": <bool>, "status": "good"|"warning"},
-    "brandRegistry": {"detected": <bool>, "status": "good"|"warning"},
-    "reviewRating": {"rating": <float>, "reviewCount": <int>, "categoryAvg": <float>, "status": "good"|"warning"|"critical"},
+    "imageCount": {"count": <int or null if unknown>, "benchmark": 7, "status": "good"|"warning"|"critical"|"unknown"},
+    "aPlusContent": {"present": <bool or null if unknown>, "status": "good"|"warning"|"unknown"},
+    "brandRegistry": {"detected": <bool or null if unknown>, "status": "good"|"warning"|"unknown"},
+    "reviewRating": {"rating": <float or null if unknown>, "reviewCount": <int or null if unknown>, "categoryAvg": <float or null if unknown>, "status": "good"|"warning"|"critical"|"unknown"},
     "keyFinding": "<summary sentence>"
   },
   "revenueGapReport": {
@@ -752,7 +752,7 @@ If a "PERFORMANCE SNAPSHOT (PRE-CALCULATED)" section is provided, use those exac
 4-LAYER RULES:
 - adEfficiencySignal PPC fields will be overridden by Python — focus on keyFinding and analysis.
 - revenueGapReport: derive from Business Report CSV if present (sessions, conversion rates, revenue per ASIN).
-- listingHealthSnapshot: estimate from available data. If no listing data, make reasonable estimates and flag in dataGaps.
+- listingHealthSnapshot: use only data explicitly found in uploaded files. If a field cannot be confirmed (imageCount.count, reviewRating.rating, reviewRating.reviewCount, reviewRating.categoryAvg), set it to null — do NOT guess or estimate. Set brandRegistry.detected to null if not confirmed. Flag missing data in dataGaps.
 - dataGaps: explicitly list any missing files (e.g., "No Search Terms Report uploaded", "No Active Listings data"). Never use nulls or made-up estimates without flagging.
 - Every insight must name specifics: ASIN, dollar amount, percentage.
 - compiledReport.topActions: 3-5 prioritized actions with estimated monthly gains, ranked by impact.
