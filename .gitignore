@@ -36,6 +36,8 @@ Thumbs.db
 #Claude
 .claude/
 claude.md
+.claude/settings.local.json
+.claude/settings.json
 
 # Local test files and session notes
 tests/
