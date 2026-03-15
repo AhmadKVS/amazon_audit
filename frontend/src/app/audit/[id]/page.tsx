@@ -489,10 +489,13 @@ function AuditResultsContent() {
               <p className="text-sm text-slate-500 mt-0.5">{category || niche} · Amazon US</p>
             )}
           </div>
-          <div className="text-right">
-            <p className="text-xs text-slate-400 mb-0.5">Prepared by</p>
-            <p className="text-base font-bold text-slate-800">Revlyn</p>
-            <p className="text-[10px] text-slate-400 mt-0.5">{new Date().toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" })}</p>
+          <div className="text-right flex flex-col items-end gap-1">
+            <p className="text-xs text-slate-400">Prepared by</p>
+            <div style={{background: "#1e293b", borderRadius: "8px", padding: "8px 14px", display: "inline-flex", alignItems: "center", gap: "8px"}}>
+              <img src="/logo.png" alt="Revlyn" style={{height: "32px", width: "auto"}} />
+              <span style={{fontSize: "14px", fontWeight: "700", color: "#f97316", letterSpacing: "0.05em"}}>Amazon Auditer</span>
+            </div>
+            <p className="text-[10px] text-slate-400">{new Date().toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" })}</p>
           </div>
         </div>
       </div>
@@ -501,14 +504,12 @@ function AuditResultsContent() {
       <header className="border-b border-slate-800 bg-slate-900/50 backdrop-blur sticky top-0 z-10 no-print">
         <div className="mx-auto flex h-16 max-w-5xl items-center justify-between px-4">
           <div className="flex items-center gap-3">
-            <Link href="/" className="text-sm text-slate-400 hover:text-amber-400 transition-colors flex items-center gap-1">
-              <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
-              </svg>
-              Home
+            <Link href="/" className="flex items-center gap-3 hover:opacity-80 transition-opacity">
+              <img src="/logo.png" alt="Revlyn" className="h-14 w-auto" />
+              <span className="text-lg font-bold tracking-wide bg-gradient-to-r from-orange-400 via-amber-400 to-orange-300 bg-clip-text text-transparent">Amazon Auditer</span>
             </Link>
             <span className="text-slate-700">/</span>
-            <span className="text-sm font-medium text-slate-200 truncate max-w-[200px]">{brandName || "Scorecard"}</span>
+            <span className="text-sm font-medium text-slate-400 truncate max-w-[200px]">{brandName || "Scorecard"}</span>
           </div>
           <div className="flex items-center gap-2">
             <ShareButton auditId={auditId} disabled={!scorecard} />
@@ -589,9 +590,69 @@ function AuditResultsContent() {
           )}
         </section>
 
+        {/* ── Post-scorecard CTAs ── */}
+        {scorecard && (
+          <div className="no-print grid grid-cols-1 sm:grid-cols-2 gap-4">
+            {/* Book a call */}
+            <a
+              href="https://launch.withrevlyn.com/widget/bookings/discovery-call-with-revlyn"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="rounded-2xl border border-amber-500/40 bg-gradient-to-br from-amber-500/10 to-slate-900/60 p-6 flex flex-col gap-3 hover:border-amber-500/70 hover:from-amber-500/15 transition-all group"
+            >
+              <div className="flex items-center gap-2">
+                <span className="w-8 h-8 rounded-full bg-amber-500/20 flex items-center justify-center">
+                  <svg className="w-4 h-4 text-amber-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
+                  </svg>
+                </span>
+                <p className="text-xs font-semibold uppercase tracking-wider text-amber-400">Talk to an Expert</p>
+              </div>
+              <p className="text-base font-bold text-slate-100 leading-snug">
+                Schedule a free strategy call to learn how to fix these issues
+              </p>
+              <p className="text-xs text-slate-400">30 minutes · No commitment · Completely free</p>
+              <span className="mt-auto inline-flex items-center gap-1.5 text-xs font-semibold text-amber-400 group-hover:gap-2.5 transition-all">
+                Schedule a call now
+                <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                </svg>
+              </span>
+            </a>
+
+            {/* Get a deeper report */}
+            <div
+              className="rounded-2xl border border-slate-700 bg-slate-900/50 p-6 flex flex-col gap-3 hover:border-slate-600 transition-all cursor-pointer group"
+              onClick={() => {
+                const el = document.getElementById("revenue-gap-section");
+                if (el) el.scrollIntoView({ behavior: "smooth" });
+              }}
+            >
+              <div className="flex items-center gap-2">
+                <span className="w-8 h-8 rounded-full bg-blue-500/20 flex items-center justify-center">
+                  <svg className="w-4 h-4 text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 17v-2m3 2v-4m3 4v-6m2 10H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                  </svg>
+                </span>
+                <p className="text-xs font-semibold uppercase tracking-wider text-blue-400">Deeper Analysis</p>
+              </div>
+              <p className="text-base font-bold text-slate-100 leading-snug">
+                Get a full revenue &amp; ad efficiency report
+              </p>
+              <p className="text-xs text-slate-400">Upload your Business Report and Search Terms Report to unlock per-ASIN diagnostics and ad waste analysis</p>
+              <span className="mt-auto inline-flex items-center gap-1.5 text-xs font-semibold text-slate-300 group-hover:gap-2.5 transition-all">
+                Upload your reports
+                <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                </svg>
+              </span>
+            </div>
+          </div>
+        )}
+
         {/* ── Page 2: Revenue Gap Analysis (unlock with Business Report) ── */}
         {revenueGap ? (
-          <section className="print-break-before">
+          <section className="print-break-before" id="revenue-gap-section">
             <h3 className="text-lg font-semibold text-slate-100 mb-4 flex items-center gap-2">
               <span className="w-6 h-6 rounded-full bg-amber-500/20 border border-amber-500/40 flex items-center justify-center text-xs text-amber-400 font-bold">2</span>
               Revenue Gap Analysis
@@ -599,7 +660,7 @@ function AuditResultsContent() {
             <RevenueGapSection data={revenueGap} />
           </section>
         ) : (
-          <section className="no-print">
+          <section className="no-print" id="revenue-gap-section">
             <h3 className="text-lg font-semibold text-slate-100 mb-4 flex items-center gap-2">
               <span className="w-6 h-6 rounded-full bg-amber-500/20 border border-amber-500/40 flex items-center justify-center text-xs text-amber-400 font-bold">2</span>
               Revenue Gap Analysis
@@ -664,10 +725,14 @@ function AuditResultsContent() {
       </main>
 
       {/* Print-only footer */}
-      <div className="print-only hidden mt-10 pt-4 text-center" style={{borderTop: "1px solid #e2e8f0"}}>
+      <div className="print-only hidden mt-10 pt-4 flex items-center justify-between" style={{borderTop: "1px solid #e2e8f0"}}>
         <p className="text-[10px] text-slate-400">
-          Confidential · Prepared by <span className="font-semibold text-slate-400">Revlyn</span> · {new Date().toLocaleDateString("en-US", { month: "long", year: "numeric" })}
+          Confidential · {new Date().toLocaleDateString("en-US", { month: "long", year: "numeric" })}
         </p>
+        <div style={{background: "#1e293b", borderRadius: "6px", padding: "5px 10px", display: "inline-flex", alignItems: "center", gap: "6px"}}>
+          <img src="/logo.png" alt="Revlyn" style={{height: "22px", width: "auto"}} />
+          <span style={{fontSize: "11px", fontWeight: "700", color: "#f97316", letterSpacing: "0.05em"}}>Amazon Auditer</span>
+        </div>
       </div>
     </div>
   );

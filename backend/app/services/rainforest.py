@@ -228,14 +228,30 @@ async def discover_asins(
                 print(f"[rainforest] lp_asin detail brand={detail_brand!r} title={details.get('title', '')[:50]!r}")
 
                 search_candidates: list[str] = []
-                # 1. Exact brand from product details (always first, even if looks like seller ID)
-                if detail_brand:
-                    search_candidates.append(detail_brand)
-                # 2. Raw slug from the store URL (e.g. "FERUERW" from /stores/FERUERW/page/...)
+                # 1. User-supplied brand_hint takes top priority when it's a readable brand name.
+                #    This prevents the lp_asin's brand (e.g. "Melissa & Doug" on a Tiny Land store
+                #    page) from overriding what the user explicitly told us.
+                if brand_hint and not _looks_like_seller_id(brand_hint):
+                    search_candidates.append(brand_hint)
+                # 2. Raw slug from the store URL (e.g. "TinyLand" from /stores/TinyLand/page/...)
                 store_slug = _extract_store_slug(store_url)
-                if store_slug and store_slug.lower() != (detail_brand or "").lower():
+                if store_slug and not any(store_slug.lower() == c.lower() for c in search_candidates):
                     search_candidates.append(store_slug)
-                # 3. Title keywords as last resort (only when brand looks like a seller ID code)
+                # 3. Brand from the lp_asin product details — only add if it matches the brand_hint
+                #    or store slug (i.e. it's genuinely this brand, not a co-sold product).
+                if detail_brand:
+                    slug_lower = store_slug.lower() if store_slug else ""
+                    hint_lower = brand_hint.lower() if brand_hint else ""
+                    brand_matches_store = (
+                        detail_brand.lower() == hint_lower
+                        or detail_brand.lower() == slug_lower
+                        or (hint_lower and hint_lower in detail_brand.lower())
+                        or (hint_lower and detail_brand.lower() in hint_lower)
+                    )
+                    if brand_matches_store or not search_candidates:
+                        if not any(detail_brand.lower() == c.lower() for c in search_candidates):
+                            search_candidates.append(detail_brand)
+                # 4. Title keywords as last resort (only when brand looks like a seller ID code)
                 if detail_brand and _looks_like_seller_id(detail_brand):
                     title_words = [
                         w for w in details.get("title", "").split()
@@ -243,10 +259,6 @@ async def discover_asins(
                     ]
                     if title_words:
                         search_candidates.append(" ".join(title_words[:3]))
-                # 4. brand_hint if it's a readable brand name and not already covered
-                if brand_hint and not _looks_like_seller_id(brand_hint):
-                    if not any(brand_hint.lower() == c.lower() for c in search_candidates):
-                        search_candidates.append(brand_hint)
 
                 best_brand_products: list[dict] = []
                 for candidate in search_candidates:

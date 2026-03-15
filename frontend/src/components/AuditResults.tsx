@@ -790,9 +790,15 @@ export function ListingHealthSection({ data }: { data: ListingHealthSnapshot }) 
               <>
                 <div className="space-y-1">
                   <p className={`text-2xl font-bold ${data.imageCount.status === "good" ? "text-emerald-400" : data.imageCount.status === "critical" ? "text-red-400" : "text-amber-400"}`}>
-                    {data.imageCount.count}<span className="text-sm text-slate-500">/{data.imageCount.benchmark}</span>
+                    {data.imageCount.count}
+                    <span className="text-sm text-slate-500 ml-1">images</span>
                   </p>
-                  {statusBadge(data.imageCount.status, data.imageCount.status === "good" ? "Meets benchmark" : "Below benchmark")}
+                  {statusBadge(
+                    data.imageCount.status,
+                    data.imageCount.status === "good"
+                      ? `✓ Meets benchmark (${data.imageCount.benchmark}+)`
+                      : `Below benchmark (${data.imageCount.benchmark} recommended)`
+                  )}
                 </div>
               </>
             )}

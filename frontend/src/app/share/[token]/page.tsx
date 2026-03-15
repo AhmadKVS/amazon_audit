@@ -184,10 +184,13 @@ export default function SharePage() {
                 <p className="text-sm text-slate-500 mt-0.5">{audit.niche} · {audit.marketplace || "Amazon US"}</p>
               )}
             </div>
-            <div className="text-right">
-              <p className="text-xs text-slate-400 mb-0.5">Prepared by</p>
-              <p className="text-base font-bold text-slate-800">Revlyn</p>
-              <p className="text-[10px] text-slate-400 mt-0.5">{date}</p>
+            <div className="text-right flex flex-col items-end gap-1">
+              <p className="text-xs text-slate-400">Prepared by</p>
+              <div style={{background: "#1e293b", borderRadius: "8px", padding: "8px 14px", display: "inline-flex", alignItems: "center", gap: "8px"}}>
+                <img src="/logo.png" alt="Revlyn" style={{height: "32px", width: "auto"}} />
+                <span style={{fontSize: "14px", fontWeight: "700", color: "#f97316", letterSpacing: "0.05em"}}>Amazon Auditer</span>
+              </div>
+              <p className="text-[10px] text-slate-400">{date}</p>
             </div>
           </div>
         </div>
@@ -195,7 +198,10 @@ export default function SharePage() {
         {/* Header */}
         <header className="border-b border-slate-800 bg-slate-900/50 backdrop-blur no-print">
           <div className="mx-auto flex h-14 max-w-5xl items-center justify-between px-4">
-            <span className="text-base font-semibold text-amber-400 tracking-tight">Amazon Audit</span>
+            <div className="flex items-center gap-3">
+              <img src="/logo.png" alt="Revlyn" className="h-10 w-auto" />
+              <span className="text-lg font-bold tracking-wide bg-gradient-to-r from-orange-400 via-amber-400 to-orange-300 bg-clip-text text-transparent">Amazon Auditer</span>
+            </div>
             <div className="flex items-center gap-2">
               <span className="text-xs text-slate-500">Report prepared {date}</span>
               <button

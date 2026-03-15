@@ -258,7 +258,11 @@ async def _rainforest_scorecard(client: httpx.AsyncClient, store_url: str, brand
     lowest_sellers = [_merge(p) for p in lowest_sellers]
 
     has_a_plus = main.get("has_a_plus", False)
-    brand_name = main.get("brand", "") or brand_hint
+    # Prefer the user-supplied brand_hint over the lp_asin's detected brand.
+    # The lp_asin may belong to a different brand (e.g. a co-sold product or featured ASIN
+    # from a partner brand on the store page), so the user's explicit input is more reliable.
+    detected_brand = main.get("brand", "")
+    brand_name = brand_hint or detected_brand or "Unknown Brand"
     brand_registry = has_a_plus or bool(main.get("has_brand_story"))
 
     # Collect prices across displayed products for range

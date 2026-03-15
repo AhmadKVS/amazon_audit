@@ -12,7 +12,7 @@ export default function Dashboard() {
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const submitDisabled = !storeUrl.trim() || !email.trim() || submitting;
+  const submitDisabled = !storeUrl.trim() || !email.trim() || !brandName.trim() || submitting;
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -74,7 +74,10 @@ export default function Dashboard() {
       {/* Header */}
       <header className="border-b border-slate-800 bg-slate-900/50 backdrop-blur sticky top-0 z-10">
         <div className="mx-auto flex h-16 max-w-7xl items-center justify-between px-6">
-          <h1 className="text-xl font-semibold tracking-tight text-amber-400">Amazon Audit</h1>
+          <div className="flex items-center gap-3">
+            <img src="/logo.png" alt="Revlyn" className="h-14 w-auto" />
+            <span className="text-lg font-bold tracking-wide bg-gradient-to-r from-orange-400 via-amber-400 to-orange-300 bg-clip-text text-transparent">Amazon Auditer</span>
+          </div>
         </div>
       </header>
 
@@ -113,12 +116,13 @@ export default function Dashboard() {
 
             <div>
               <label className="block text-xs font-medium text-slate-400 mb-1.5">
-                Brand Name <span className="text-slate-400">(optional)</span>
+                Brand Name <span className="text-red-400">*</span>
               </label>
               <input
                 type="text"
                 value={brandName}
                 onChange={(e) => setBrandName(e.target.value)}
+                required
                 placeholder="e.g. Crystal Clean Car Care"
                 className="block w-full rounded-lg border border-slate-700 bg-slate-800 px-4 py-3 text-sm text-slate-100 placeholder-slate-500 focus:border-amber-500 focus:ring-1 focus:ring-amber-500 outline-none transition"
               />
