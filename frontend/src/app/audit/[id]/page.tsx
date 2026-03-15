@@ -622,7 +622,7 @@ function AuditResultsContent() {
 
             {/* Get a deeper report */}
             <div
-              className="rounded-2xl border border-slate-700 bg-slate-900/50 p-6 flex flex-col gap-3 hover:border-slate-600 transition-all cursor-pointer group"
+              className="rounded-2xl border border-blue-500/40 bg-gradient-to-br from-blue-500/10 to-slate-900/60 p-6 flex flex-col gap-3 hover:border-blue-500/70 hover:from-blue-500/15 transition-all cursor-pointer group shadow-lg shadow-blue-500/10"
               onClick={() => {
                 const el = document.getElementById("revenue-gap-section");
                 if (el) el.scrollIntoView({ behavior: "smooth" });
@@ -640,7 +640,7 @@ function AuditResultsContent() {
                 Get a full revenue &amp; ad efficiency report
               </p>
               <p className="text-xs text-slate-400">Upload your Business Report and Search Terms Report to unlock per-ASIN diagnostics and ad waste analysis</p>
-              <span className="mt-auto inline-flex items-center gap-1.5 text-xs font-semibold text-slate-300 group-hover:gap-2.5 transition-all">
+              <span className="mt-auto inline-flex items-center gap-1.5 text-xs font-semibold text-blue-400 group-hover:gap-2.5 transition-all">
                 Upload your reports
                 <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
