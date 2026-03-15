@@ -17,8 +17,8 @@ export const metadata: Metadata = {
   title: "Amazon Audit | Seller Analytics",
   description: "Amazon seller audit and analytics dashboard",
   icons: {
-    icon: "/logo.png",
-    apple: "/logo.png",
+    icon: "/favicon.ico",
+    apple: "/favicon.png",
   },
 };
 
