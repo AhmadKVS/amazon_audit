@@ -557,9 +557,21 @@ async def get_product_details(
         if key in rb:
             rating_distribution[star_num] = rb[key].get("percentage", 0)
 
-    # Parse price
-    price_obj = product.get("price", {})
-    price_str = price_obj.get("raw", "") if isinstance(price_obj, dict) else str(price_obj or "")
+    # Parse price — check buybox_winner first (most common in type=product responses),
+    # then fall back to top-level price field.
+    price_str = ""
+    buybox = product.get("buybox_winner", {})
+    if isinstance(buybox, dict):
+        price_obj = buybox.get("price", {})
+        price_str = price_obj.get("raw", "") if isinstance(price_obj, dict) else str(price_obj or "")
+    if not price_str:
+        price_obj = product.get("price", {})
+        if isinstance(price_obj, dict):
+            price_str = price_obj.get("raw", "") or price_obj.get("value", "") or ""
+        elif isinstance(price_obj, (int, float)):
+            price_str = f"${price_obj:.2f}"
+        elif isinstance(price_obj, str) and price_obj:
+            price_str = price_obj
 
     return {
         "asin": product.get("asin", asin),
