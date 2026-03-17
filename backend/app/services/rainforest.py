@@ -136,6 +136,7 @@ async def discover_asins(
     """
     seller_id = extract_seller_id_from_url(store_url)
     lp_asin = _extract_lp_asin(store_url)  # fast-path seed when present
+    sparse_fallback: list[dict] = []  # holds sparse Strategy 2 results as last resort
 
     # Strategy 1: seller_products by seller ID (only for /sp?seller= style URLs)
     if seller_id:
@@ -157,9 +158,13 @@ async def discover_asins(
         if normalized:
             try:
                 products = await _store_page_products(client, normalized)
-                if products:
+                if len(products) >= 3:
                     print(f"[rainforest] store_page(normalized) -> {len(products)} products")
                     return products
+                elif products:
+                    print(f"[rainforest] store_page(normalized) -> {len(products)} products (sparse, continuing)")
+                    if len(products) > len(sparse_fallback):
+                        sparse_fallback = products
             except Exception as e:
                 print(f"[rainforest] store_page(normalized) failed: {e}")
 
@@ -167,9 +172,13 @@ async def discover_asins(
             if normalized != store_url:
                 try:
                     products = await _store_page_products(client, store_url)
-                    if products:
+                    if len(products) >= 3:
                         print(f"[rainforest] store_page(original) -> {len(products)} products")
                         return products
+                    elif products:
+                        print(f"[rainforest] store_page(original) -> {len(products)} products (sparse, continuing)")
+                        if len(products) > len(sparse_fallback):
+                            sparse_fallback = products
                 except Exception as e:
                     print(f"[rainforest] store_page(original) failed: {e}")
 
@@ -178,9 +187,13 @@ async def discover_asins(
         if slug:
             try:
                 products = await _seller_products(client, slug, amazon_domain)
-                if products:
+                if len(products) >= 3:
                     print(f"[rainforest] seller_products(slug={slug!r}) -> {len(products)} products")
                     return products
+                elif products:
+                    print(f"[rainforest] seller_products(slug={slug!r}) -> {len(products)} products (sparse, continuing)")
+                    if len(products) > len(sparse_fallback):
+                        sparse_fallback = products
             except Exception as e:
                 print(f"[rainforest] seller_products(slug={slug!r}) failed: {e}")
 
@@ -282,7 +295,7 @@ async def discover_asins(
             print(f"[rainforest] lp_asin product detail failed: {e}")
 
     # Strategy 5: brand_hint fallback — for URLs with no slug and no lp_asin
-    # (e.g. /stores/page/UUID with no query params)
+    # (e.g. /stores/page/UUID with no query params), or when Strategy 2 returned sparse results
     if brand_hint and not _looks_like_seller_id(brand_hint):
         print(f"[rainforest] Strategy 5: brand_hint fallback search for {brand_hint!r}")
         try:
@@ -292,6 +305,11 @@ async def discover_asins(
                 return products
         except Exception as e:
             print(f"[rainforest] brand_hint fallback failed: {e}")
+
+    # Last resort: return sparse Strategy 2 results if nothing better was found
+    if sparse_fallback:
+        print(f"[rainforest] returning sparse_fallback ({len(sparse_fallback)} products)")
+        return sparse_fallback
 
     return []
 

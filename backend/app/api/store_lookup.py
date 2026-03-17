@@ -25,6 +25,7 @@ from app.services.email_service import send_scorecard_email
 from app.services.rainforest import (
     discover_asins,
     get_product_details,
+    batch_product_details,
     extract_amazon_domain,
     brand_search,
     _extract_store_slug,
@@ -137,6 +138,34 @@ async def _rainforest_scorecard(client: httpx.AsyncClient, store_url: str, brand
         raise ValueError("No products found via Rainforest API")
 
     print(f"[store-lookup] discovered {len(products)} products")
+
+    # Enrich stub products — store API sometimes returns ASINs with only asin/link and no data.
+    # Batch-fetch their details so they survive the variant dedup and stub filter below.
+    stub_asins = [
+        p["asin"] for p in products
+        if not p.get("title") and not p.get("image") and not int(p.get("reviews", 0) or 0)
+    ]
+    if stub_asins:
+        print(f"[store-lookup] enriching {len(stub_asins)} stub ASINs via batch_product_details")
+        stub_details = await batch_product_details(client, stub_asins, amazon_domain)
+        detail_map = {d["asin"]: d for d in stub_details if d.get("asin")}
+        enriched = []
+        for p in products:
+            d = detail_map.get(p["asin"])
+            if d:
+                enriched.append({
+                    "asin": p["asin"],
+                    "title": d.get("title") or p.get("title", ""),
+                    "price": d.get("price") or p.get("price", ""),
+                    "rating": d.get("rating") or p.get("rating", 0),
+                    "reviews": d.get("ratings_total") or p.get("reviews", 0),
+                    "image": d.get("main_image") or p.get("image", ""),
+                    "link": d.get("link") or p.get("link", ""),
+                })
+            else:
+                enriched.append(p)
+        products = enriched
+        print(f"[store-lookup] after stub enrichment: {len(products)} products")
 
     # Optional top-up: only when store returned too few products for meaningful ranking.
     if len(products) < 4:
